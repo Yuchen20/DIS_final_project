@@ -53,7 +53,7 @@ class DiffusionTrainer(Trainer):
         self.scheduler = scheduler
         super().__init__(*args, **kwargs)
 
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         sources = inputs['source']
         targets = inputs['target']
         batch_size = sources.size(0)
