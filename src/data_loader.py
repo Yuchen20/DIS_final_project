@@ -30,8 +30,7 @@ class DiffusionDataset(Dataset):
         self.img_size = img_size
         self.transform = transform
         self.normalize = normalize
-        self.config = CFG(kappa=2.0, p=0.5, eta_T=0.999, T=50)
-        self.scheduler = DiffusionScheduler(self.config)
+
         for csv_path in csv_file_list:
             with open(csv_path, 'r', newline='') as f:
                 for row in csv.reader(f):
@@ -55,8 +54,7 @@ class DiffusionDataset(Dataset):
             return tensor
         source = load_chs(self.source_channels)
         target = load_chs(self.target_channels)
-        noised_residual = self.scheduler.get_noisy_image(20, source, target)
-        return noised_residual, target
+        return source, target
     def load_all_channels(self, idx, channels=None):
         base_dir, prefix = self.samples[idx]
         chs = channels if channels is not None else list(range(1,9))

@@ -18,3 +18,18 @@ Now As I have all these, write a trainer script.
   - logging_steps: 10
 Always set the seed to 42 for reproducibility!
 For modle, use swin transformer from segmentation models pytorch. don't use the pretrained weights.
+
+The loss is just the simple MSE loss with a coefficient from DiffusionScheduler.
+
+SO the data set will give a source image, and a target image.
+A random time step t is sampled for the diffusion scheduler.
+using this time step, the DiffusionScheduler can be used to generate a noisy image from the source image and the target image.
+the noise image is the input to the model.
+The target image is the output of the model.
+we get a loss coefficient from the DiffusionScheduler, and we use this to scale the loss. the loss is just the MSE loss between the model output and the target image.
+The model output is the fully denoised image.
+
+The config = CFG(kappa=2.0, p=0.5, eta_T=0.999, T=50) 
+
+No augumentation, do use accelerate to prepare the model no need for VAE (but leave option to use / add VAE) use torch.compile to prepare the model if possible to make it faster, evalutiaon should be per epoch, the save stratehy is also the best of evaluation.load_best_model_at_end=True (fp16=True) and report_to="wandb"
+no early sopping DO all the seeding
