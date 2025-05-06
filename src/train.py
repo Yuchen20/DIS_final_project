@@ -130,7 +130,7 @@ def main():
 
     # model: Swin Unet from segmentation_models_pytorch
     model = smp.Unet(
-        encoder_name='swin_base_patch4_window7_224',
+        encoder_name='tu-swin_base_patch4_window7_224',
         encoder_weights=None,
         in_channels=len(train_dataset.source_channels),
         classes=len(train_dataset.target_channels)
@@ -152,7 +152,6 @@ def main():
         lr_scheduler_type=config.lr_scheduler_type,
         warmup_steps=config.warmup_steps,
         logging_steps=config.logging_steps,
-        evaluation_strategy=config.evaluation_strategy,
         save_strategy=config.save_strategy,
         load_best_model_at_end=config.load_best_model_at_end,
         fp16=config.fp16,
