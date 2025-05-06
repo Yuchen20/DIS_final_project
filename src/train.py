@@ -152,6 +152,7 @@ def main():
         lr_scheduler_type=config.lr_scheduler_type,
         warmup_steps=config.warmup_steps,
         logging_steps=config.logging_steps,
+        eval_strategy=config.evaluation_strategy,
         save_strategy=config.save_strategy,
         load_best_model_at_end=config.load_best_model_at_end,
         fp16=config.fp16,
