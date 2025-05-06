@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
+from noise_scheduling import DiffusionScheduler, CFG
 
 def process_and_resize_image(filepath, img_size=(512, 512)):
     """
@@ -29,12 +30,13 @@ class DiffusionDataset(Dataset):
         self.img_size = img_size
         self.transform = transform
         self.normalize = normalize
+        self.config = CFG(kappa=2.0, p=0.5, eta_T=0.999, T=50)
+        self.scheduler = DiffusionScheduler(self.config)
         for csv_path in csv_file_list:
             with open(csv_path, 'r', newline='') as f:
                 for row in csv.reader(f):
                     if row and row[0].strip():
                         self.samples.append((os.path.join(images_dir, csv_path.split('/')[-1].split('_')[-1][:-4], 'Images'), row[0].strip()))
-                        print(images_dir, ' ,', csv_path.split('_')[-1][:-4])
     def __len__(self):
         return len(self.samples)
     def __getitem__(self, idx):
@@ -53,7 +55,8 @@ class DiffusionDataset(Dataset):
             return tensor
         source = load_chs(self.source_channels)
         target = load_chs(self.target_channels)
-        return source, target
+        noised_residual = self.scheduler.get_noisy_image(20, source, target)
+        return noised_residual, target
     def load_all_channels(self, idx, channels=None):
         base_dir, prefix = self.samples[idx]
         chs = channels if channels is not None else list(range(1,9))
