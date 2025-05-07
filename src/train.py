@@ -5,9 +5,12 @@ import torch
 import wandb
 from dataclasses import dataclass, asdict
 from transformers import Trainer, TrainingArguments
-import segmentation_models_pytorch as smp
 from data_loader import DiffusionDataset
 from noise_scheduling import CFG, DiffusionScheduler
+
+import os, sys
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath("")), 'models'))
+from unet import UNetModelSwin
 
 # 1. Configuration
 @dataclass
@@ -69,7 +72,7 @@ class DiffusionTrainer(Trainer):
         noisy = torch.stack(noisy)
         coefs = torch.stack(coefs).view(batch_size, 1, 1, 1)
         # forward pass
-        outputs = model(noisy)
+        outputs = model(noisy, ts)
         # mse loss scaled by coef
         loss = ((outputs - targets).pow(2) * coefs).mean()
 
@@ -101,7 +104,7 @@ def main():
     scheduler = DiffusionScheduler(CFG(config.kappa, config.p, config.eta_T, config.T))
 
     # Data loading setup (from data_processing.ipynb guide)
-    source_channels = [6, 7, 8]
+    source_channels = [7, 7, 7]
     target_channels = [1, 2, 5]
     num_workers = min(os.cpu_count() - 2, os.cpu_count() // 2)
 
@@ -128,12 +131,13 @@ def main():
         img_size=(512, 512)
     )
 
-    # model: Swin Unet from segmentation_models_pytorch
-    model = smp.Unet(
-        encoder_name='tu-swin_base_patch4_window7_224',
-        encoder_weights=None,
-        in_channels=len(train_dataset.source_channels),
-        classes=len(train_dataset.target_channels)
+
+    model = UNetModelSwin(
+        image_size=512, 
+        in_channels=3, model_channels=64, out_channels=3, 
+        num_res_blocks=2, 
+        attention_resolutions=(256, 128, 64), 
+        cond_lq = False
     )
     # speed up with torch.compile
     try:
