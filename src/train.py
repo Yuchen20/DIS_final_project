@@ -131,7 +131,6 @@ def main():
         img_size=(512, 512)
     )
 
-
     model = UNetModelSwin(
         image_size=512, 
         in_channels=3, model_channels=64, out_channels=3, 
