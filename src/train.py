@@ -77,7 +77,7 @@ class DiffusionTrainer(Trainer):
         noisy = torch.stack(noisy)
         coefs = torch.stack(coefs).view(batch_size, 1, 1, 1)
         # forward pass
-        outputs = model(noisy, ts)
+        outputs = model(noisy, ts.float())  # Convert ts to float for embedding
         # mse loss scaled by coef
         loss = ((outputs - targets).pow(2) * coefs).mean()
 
@@ -229,10 +229,16 @@ def main():
     )
 
     if config.use_diffusion:
-        model = UNetModelSwin(image_size=512, 
-              in_channels=len(source_channels), model_channels=128, 
-              out_channels=len(target_channels), 
-              num_res_blocks=2, attention_resolutions=(256, 128, 64), cond_lq = False)
+        model = UNetModelSwin(
+            image_size=512, 
+            in_channels=len(source_channels), 
+            model_channels=128, 
+            out_channels=len(target_channels), 
+            num_res_blocks=2, 
+            attention_resolutions=(256, 128, 64), 
+            cond_lq=False,
+            time_embed_dim=128  # Add time embedding dimension
+        )
     else:
         model = UNet(in_channels=len(source_channels), out_channels=len(target_channels))
 
@@ -254,9 +260,9 @@ def main():
         warmup_steps=config.warmup_steps,
         logging_steps=config.logging_steps,
         eval_strategy=config.evaluation_strategy,
-        # eval_steps=100,
+        eval_steps=100,
         save_strategy=config.save_strategy,
-        # save_steps=100,
+        save_steps=100,
         load_best_model_at_end=config.load_best_model_at_end,
         fp16=config.fp16,
         report_to=config.report_to,
