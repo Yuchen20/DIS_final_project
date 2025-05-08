@@ -236,8 +236,7 @@ def main():
             out_channels=len(target_channels), 
             num_res_blocks=2, 
             attention_resolutions=(256, 128, 64), 
-            cond_lq=False,
-            time_embed_dim=128  # Add time embedding dimension
+            cond_lq=False
         )
     else:
         model = UNet(in_channels=len(source_channels), out_channels=len(target_channels))
