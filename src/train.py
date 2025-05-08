@@ -163,10 +163,14 @@ class NormalTrainer(Trainer):
 # 5. Main training function
 def main():
     # config = TrainConfig()
-    config = TrainConfig(use_diffusion=False)
+    config = TrainConfig(use_diffusion=False, output_dir='/home/ym429/rds/hpc-work/dissertation/results/')
     set_seed(config.seed)
     # init WandB
-    wandb.init(project='diffusion-denoise', config=asdict(config))
+    wandb.init(
+        project='diffusion-denoise',
+        config=asdict(config),
+        dir='/home/ym429/rds/hpc-work/dissertation/results/wandb'  # Set wandb directory
+    )
 
     # Data loading setup (from data_processing.ipynb guide)
     source_channels = [7, 7, 7, 7, 7]
