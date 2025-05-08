@@ -76,6 +76,8 @@ class DiffusionTrainer(Trainer):
             coefs.append(self.scheduler.get_loss_coef(int(t.item())))
         noisy = torch.stack(noisy)
         coefs = torch.stack(coefs).view(batch_size, 1, 1, 1)
+        print(f"ts: {ts}, {ts.shape}")
+        print(f"noisy: {noisy.shape}")
         # forward pass
         outputs = model(noisy, ts)  # ts is already in the correct format
         # mse loss scaled by coef
