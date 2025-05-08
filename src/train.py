@@ -1,4 +1,4 @@
-import os
+import os, sys
 import random
 import numpy as np
 import torch
@@ -7,10 +7,11 @@ from dataclasses import dataclass, asdict
 from transformers import Trainer, TrainingArguments
 from data_loader import DiffusionDataset
 from noise_scheduling import CFG, DiffusionScheduler
-
-import os, sys
+import segmentation_models_pytorch as smp
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath("")), 'models'))
-from unet import UNetModelSwin
+from plain_unet import UNet
+
+
 
 # 1. Configuration
 @dataclass
@@ -35,6 +36,8 @@ class TrainConfig:
     p: float = 0.5
     eta_T: float = 0.999
     T: int = 50
+    # training mode
+    use_diffusion: bool = True
 
 # 2. Set seeds for reproducibility
 def set_seed(seed: int):
@@ -93,19 +96,48 @@ class DiffusionTrainer(Trainer):
 
         return (loss, outputs) if return_outputs else loss
 
+class NormalTrainer(Trainer):
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        sources = inputs['source']
+        targets = inputs['target']
+        
+        # Direct prediction without diffusion
+        outputs = model(sources)
+        
+        # MSE loss
+        loss = (outputs - targets).pow(2).mean()
+        
+        # Log images every 100 steps
+        step = self.state.global_step
+        if step and step % 100 == 0:
+            source_img = sources[0].detach().cpu().numpy()
+            pred_img = outputs[0].detach().cpu().numpy()
+            target_img = targets[0].detach().cpu().numpy()
+            
+            # Convert to H,W,C for visualization
+            source_img = np.transpose(source_img, (1,2,0))
+            pred_img = np.transpose(pred_img, (1,2,0))
+            target_img = np.transpose(target_img, (1,2,0))
+            
+            wandb.log({
+                'source_image': wandb.Image(source_img, caption=f'step_{step}_source'),
+                'predicted_image': wandb.Image(pred_img, caption=f'step_{step}_predicted'),
+                'target_image': wandb.Image(target_img, caption=f'step_{step}_target')
+            }, step=step)
+        
+        return (loss, outputs) if return_outputs else loss
+
 # 5. Main training function
 def main():
-    config = TrainConfig()
+    # config = TrainConfig()
+    config = TrainConfig(use_diffusion=False)
     set_seed(config.seed)
     # init WandB
     wandb.init(project='diffusion-denoise', config=asdict(config))
 
-    # diffusion scheduler
-    scheduler = DiffusionScheduler(CFG(config.kappa, config.p, config.eta_T, config.T))
-
     # Data loading setup (from data_processing.ipynb guide)
-    source_channels = [7, 7, 7]
-    target_channels = [1, 2, 5]
+    source_channels = [7, 7, 7, 7, 7]
+    target_channels = [1, 2, 3, 4, 5]
     num_workers = min(os.cpu_count() - 2, os.cpu_count() // 2)
 
     # Define plate identifiers
@@ -131,13 +163,8 @@ def main():
         img_size=(512, 512)
     )
 
-    model = UNetModelSwin(
-        image_size=512, 
-        in_channels=3, model_channels=64, out_channels=3, 
-        num_res_blocks=2, 
-        attention_resolutions=(256, 128, 64), 
-        cond_lq = False
-    )
+    model = UNet(in_channels=5, out_channels=5)
+
     # speed up with torch.compile
     try:
         model = torch.compile(model)
@@ -163,14 +190,25 @@ def main():
         dataloader_num_workers=num_workers
     )
 
-    trainer = DiffusionTrainer(
-        scheduler=scheduler,
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        data_collator=data_collator
-    )
+    if config.use_diffusion:
+        # Initialize diffusion scheduler
+        scheduler = DiffusionScheduler(CFG(config.kappa, config.p, config.eta_T, config.T))
+        trainer = DiffusionTrainer(
+            scheduler=scheduler,
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            data_collator=data_collator
+        )
+    else:
+        trainer = NormalTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            data_collator=data_collator
+        )
 
     trainer.train()
 
