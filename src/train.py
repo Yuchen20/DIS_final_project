@@ -21,7 +21,7 @@ class TrainConfig:
     learning_rate: float = 5e-5
     num_train_epochs: int = 10
     per_device_train_batch_size: int = 2
-    per_device_eval_batch_size: int = 2
+    per_device_eval_batch_size: int = 16
     weight_decay: float = 0.0
     lr_scheduler_type: str = 'cosine'
     warmup_steps: int = 5000
@@ -149,7 +149,7 @@ class NormalTrainer(Trainer):
         mse = ((predictions - labels) ** 2).mean()
         return {"eval_mse": mse}
 
-    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+    def prediction_step(self, model, inputs, ignore_keys=None, *args, **kwargs):
         """Override prediction step to handle dictionary inputs"""
         sources = inputs['source']
         targets = inputs['target']
@@ -158,7 +158,7 @@ class NormalTrainer(Trainer):
             outputs = model(sources)
             loss = (outputs - targets).pow(2).mean()
             
-        return (loss, outputs, targets)
+        return (loss, None, None)  # Only return loss, no need to store outputs and targets
 
 # 5. Main training function
 def main():
