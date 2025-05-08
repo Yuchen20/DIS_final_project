@@ -8,7 +8,7 @@ from transformers import Trainer, TrainingArguments
 from data_loader import DiffusionDataset
 from noise_scheduling import CFG, DiffusionScheduler
 import segmentation_models_pytorch as smp
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath("")), 'models'))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../models')))
 from plain_unet import UNet
 
 
@@ -214,3 +214,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# accelerate launch src/train.py  --output_dir /home/ym429/rds/hpc-work/dissertation/results/
