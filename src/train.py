@@ -149,7 +149,7 @@ class NormalTrainer(Trainer):
         mse = ((predictions - labels) ** 2).mean()
         return {"eval_mse": mse}
 
-    def prediction_step(self, model, inputs, ignore_keys=None, *args, **kwargs):
+    def prediction_step(self, model, inputs, *args, **kwargs):
         """Override prediction step to handle dictionary inputs"""
         sources = inputs['source']
         targets = inputs['target']
