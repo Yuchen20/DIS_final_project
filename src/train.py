@@ -64,21 +64,27 @@ class DiffusionTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         sources = inputs['source']
         targets = inputs['target']
+        device = sources.device  # Get the device from input tensors
         batch_size = sources.size(0)
+        
         # sample random t for each example
-        ts = torch.randint(0, self.scheduler.config.T, (batch_size,), device=sources.device)  # Changed to start from 0
+        ts = torch.randint(0, self.scheduler.config.T, (batch_size,), device=device)
+        
         # generate noisy inputs and coefs
         noisy = []
         coefs = []
         for i, t in enumerate(ts):
             noisy_img = self.scheduler.get_noisy_image(int(t.item()), targets[i], sources[i])
             noisy.append(noisy_img)
-            coefs.append(self.scheduler.get_loss_coef(int(t.item())))
+            coef = self.scheduler.get_loss_coef(int(t.item()))
+            coefs.append(coef.to(device))  # Ensure coef is on the same device
+        
         noisy = torch.stack(noisy)
         coefs = torch.stack(coefs).view(batch_size, 1, 1, 1)
-
+        
         # forward pass
-        outputs = model(noisy, ts)  # ts is already in the correct format
+        outputs = model(noisy, ts)
+        
         # mse loss scaled by coef
         loss = ((outputs - targets).pow(2) * coefs).mean()
 
@@ -103,12 +109,13 @@ class DiffusionTrainer(Trainer):
         """Override prediction step to handle dictionary inputs and diffusion process"""
         sources = inputs['source']
         targets = inputs['target']
+        device = sources.device  # Get the device from input tensors
         batch_size = sources.size(0)
         
         with torch.no_grad():
             # For validation, we'll use a fixed timestep (e.g., T/2) for all samples
-            t = torch.full((batch_size,), self.scheduler.config.T // 2, device=sources.device)
-            coef = self.scheduler.get_loss_coef(int(t[0].item()))
+            t = torch.full((batch_size,), self.scheduler.config.T // 2, device=device)
+            coef = self.scheduler.get_loss_coef(int(t[0].item())).to(device)  # Ensure coef is on the same device
             
             # Generate noisy images
             noisy = []
