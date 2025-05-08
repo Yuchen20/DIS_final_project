@@ -149,6 +149,17 @@ class NormalTrainer(Trainer):
         mse = ((predictions - labels) ** 2).mean()
         return {"eval_mse": mse}
 
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        """Override prediction step to handle dictionary inputs"""
+        sources = inputs['source']
+        targets = inputs['target']
+        
+        with torch.no_grad():
+            outputs = model(sources)
+            loss = (outputs - targets).pow(2).mean()
+            
+        return (loss, outputs, targets)
+
 # 5. Main training function
 def main():
     # config = TrainConfig()
@@ -160,7 +171,7 @@ def main():
     # Data loading setup (from data_processing.ipynb guide)
     source_channels = [7, 7, 7, 7, 7]
     target_channels = [1, 2, 3, 4, 5]
-    num_workers = min(os.cpu_count() - 2, os.cpu_count() // 2)
+    num_workers = min(24, os.cpu_count() // 2)  # Limit workers to 24 or less
 
     # Define plate identifiers
     train_plates = ["BR00116991", "BR00116992", "BR00116995", "BR00117024"]
