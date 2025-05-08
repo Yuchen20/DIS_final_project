@@ -30,7 +30,7 @@ class TrainConfig:
     evaluation_strategy: str = 'epoch'
     save_strategy: str = 'epoch'
     load_best_model_at_end: bool = True
-    fp16: bool = True
+    fp16: bool = False
     report_to: str = 'wandb'
     output_dir: str = 'results'
     # diffusion params
@@ -40,6 +40,8 @@ class TrainConfig:
     T: int = 15
     # training mode
     use_diffusion: bool = True
+
+
 
 # 2. Set seeds for reproducibility
 def set_seed(seed: int):
@@ -159,7 +161,7 @@ class DiffusionTrainer(Trainer):
             outputs = model(noisy, t)
             
             # Compute loss
-            loss = ((outputs - targets).pow(2)).mean()
+            loss = ((outputs - targets).pow(2) * coef).mean()
             
         return (loss, None, None)  # Only return loss for validation
 
