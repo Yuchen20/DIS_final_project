@@ -244,12 +244,11 @@ def main():
     else:
         model = UNet(in_channels=len(source_channels), out_channels=len(target_channels))
         print(f"using plain unet")
+        try:
+            model = torch.compile(model)
+        except Exception:
+            pass
 
-    # speed up with torch.compile
-    try:
-        model = torch.compile(model)
-    except Exception:
-        pass
 
     # training arguments
     training_args = TrainingArguments(
