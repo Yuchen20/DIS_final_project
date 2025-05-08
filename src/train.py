@@ -66,7 +66,7 @@ class DiffusionTrainer(Trainer):
         targets = inputs['target']
         batch_size = sources.size(0)
         # sample random t for each example
-        ts = torch.randint(1, self.scheduler.config.T + 1, (batch_size,), device=sources.device)
+        ts = torch.randint(0, self.scheduler.config.T, (batch_size,), device=sources.device)  # Changed to start from 0
         # generate noisy inputs and coefs
         noisy = []
         coefs = []
@@ -77,7 +77,7 @@ class DiffusionTrainer(Trainer):
         noisy = torch.stack(noisy)
         coefs = torch.stack(coefs).view(batch_size, 1, 1, 1)
         # forward pass
-        outputs = model(noisy, ts.float())  # Convert ts to float for embedding
+        outputs = model(noisy, ts)  # ts is already in the correct format
         # mse loss scaled by coef
         loss = ((outputs - targets).pow(2) * coefs).mean()
 
@@ -116,7 +116,6 @@ class DiffusionTrainer(Trainer):
                 noisy.append(noisy_img)
             noisy = torch.stack(noisy)
             
-
             # Get model predictions
             outputs = model(noisy, t)
             
