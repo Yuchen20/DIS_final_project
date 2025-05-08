@@ -26,7 +26,7 @@ class TrainConfig:
     lr_scheduler_type: str = 'cosine'
     warmup_steps: int = 5000
     logging_steps: int = 10
-    evaluation_strategy: str = 'epoch'
+    evaluation_strategy: str = 'steps'
     save_strategy: str = 'epoch'
     load_best_model_at_end: bool = True
     fp16: bool = True
@@ -82,7 +82,7 @@ class DiffusionTrainer(Trainer):
 
         # log images every 100 steps
         step = self.state.global_step
-        if step and step % 100 == 0:
+        if step and step % 1000 == 0:
             # log first item in batch
             noisy_img = noisy[0].detach().cpu().numpy()
             denoised_img = outputs[0].detach().cpu().numpy()
@@ -110,7 +110,7 @@ class NormalTrainer(Trainer):
         
         # Log images every 100 steps
         step = self.state.global_step
-        if step and step % 100 == 0:
+        if step and step % 1000 == 0:
             # Get first item in batch
             source_img = sources[0].detach().cpu().numpy()  # [5, 512, 512]
             pred_img = outputs[0].detach().cpu().numpy()    # [5, 512, 512]
@@ -142,6 +142,12 @@ class NormalTrainer(Trainer):
             plt.close(fig)
         
         return (loss, outputs) if return_outputs else loss
+
+    def compute_metrics(self, eval_preds):
+        """Compute MSE metric for evaluation"""
+        predictions, labels = eval_preds
+        mse = ((predictions - labels) ** 2).mean()
+        return {"eval_mse": mse}
 
 # 5. Main training function
 def main():
@@ -199,6 +205,7 @@ def main():
         warmup_steps=config.warmup_steps,
         logging_steps=config.logging_steps,
         eval_strategy=config.evaluation_strategy,
+        eval_steps=100,
         save_strategy=config.save_strategy,
         load_best_model_at_end=config.load_best_model_at_end,
         fp16=config.fp16,
