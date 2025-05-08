@@ -27,7 +27,7 @@ class TrainConfig:
     warmup_steps: int = 5000
     logging_steps: int = 10
     evaluation_strategy: str = 'steps'
-    save_strategy: str = 'epoch'
+    save_strategy: str = 'steps'
     load_best_model_at_end: bool = True
     fp16: bool = True
     report_to: str = 'wandb'
@@ -207,6 +207,7 @@ def main():
         eval_strategy=config.evaluation_strategy,
         eval_steps=100,
         save_strategy=config.save_strategy,
+        save_steps=100,
         load_best_model_at_end=config.load_best_model_at_end,
         fp16=config.fp16,
         report_to=config.report_to,
