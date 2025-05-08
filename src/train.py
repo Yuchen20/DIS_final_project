@@ -6,12 +6,13 @@ import wandb
 from dataclasses import dataclass, asdict
 from transformers import Trainer, TrainingArguments
 from data_loader import DiffusionDataset
+# from models.unet import UNetModelSwin
 from noise_scheduling import CFG, DiffusionScheduler
 import segmentation_models_pytorch as smp
 import matplotlib.pyplot as plt
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../models')))
 from plain_unet import UNet
-
+from unet import UNetModelSwin
 
 
 # 1. Configuration
@@ -97,6 +98,33 @@ class DiffusionTrainer(Trainer):
 
         return (loss, outputs) if return_outputs else loss
 
+    def prediction_step(self, model, inputs, *args, **kwargs):
+        """Override prediction step to handle dictionary inputs and diffusion process"""
+        sources = inputs['source']
+        targets = inputs['target']
+        batch_size = sources.size(0)
+        
+        with torch.no_grad():
+            # For validation, we'll use a fixed timestep (e.g., T/2) for all samples
+            t = torch.full((batch_size,), self.scheduler.config.T // 2, device=sources.device)
+            coef = self.scheduler.get_loss_coef(int(t[0].item()))
+            
+            # Generate noisy images
+            noisy = []
+            for i in range(batch_size):
+                noisy_img = self.scheduler.get_noisy_image(int(t[i].item()), targets[i], sources[i])
+                noisy.append(noisy_img)
+            noisy = torch.stack(noisy)
+            
+
+            # Get model predictions
+            outputs = model(noisy, t)
+            
+            # Compute loss
+            loss = ((outputs - targets).pow(2) * coef).mean()
+            
+        return (loss, None, None)  # Only return loss for validation
+
 class NormalTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         sources = inputs['source']
@@ -163,7 +191,7 @@ class NormalTrainer(Trainer):
 # 5. Main training function
 def main():
     # config = TrainConfig()
-    config = TrainConfig(use_diffusion=False, output_dir='/home/ym429/rds/hpc-work/dissertation/results/')
+    config = TrainConfig(use_diffusion=True, output_dir='/home/ym429/rds/hpc-work/dissertation/results/')
     set_seed(config.seed)
     # init WandB
     wandb.init(
@@ -200,7 +228,13 @@ def main():
         img_size=(512, 512)
     )
 
-    model = UNet(in_channels=5, out_channels=5)
+    if config.use_diffusion:
+        model = UNetModelSwin(image_size=512, 
+              in_channels=len(source_channels), model_channels=128, 
+              out_channels=len(target_channels), 
+              num_res_blocks=2, attention_resolutions=(256, 128, 64), cond_lq = False)
+    else:
+        model = UNet(in_channels=len(source_channels), out_channels=len(target_channels))
 
     # speed up with torch.compile
     try:

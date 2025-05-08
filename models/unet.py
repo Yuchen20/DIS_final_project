@@ -7,8 +7,10 @@ import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .fp16_util import convert_module_to_f16, convert_module_to_f32
-from .basic_ops import (
+import os, sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from fp16_util import convert_module_to_f16, convert_module_to_f32
+from basic_ops import (
     linear,
     conv_nd,
     avg_pool_nd,
@@ -16,7 +18,7 @@ from .basic_ops import (
     normalization,
     timestep_embedding,
 )
-from .swin_transformer import BasicLayer
+from swin_transformer import BasicLayer
 
 try:
     import xformers
@@ -689,26 +691,27 @@ class UNetModelSwin(nn.Module):
         if cond_lq and lq_size == image_size:
             self.feature_extractor = nn.Identity()
             base_chn = in_channels + 1 if cond_mask else in_channels
-        else:
-            feature_extractor = []
-            feature_chn = in_channels + 1 if cond_mask else in_channels
-            base_chn = 16
-            for ii in range(int(math.log(lq_size / image_size) / math.log(2))):
-                feature_extractor.append(nn.Conv2d(feature_chn, base_chn, 3, 1, 1))
-                feature_extractor.append(nn.SiLU())
-                feature_extractor.append(Downsample(base_chn, True, out_channels=base_chn*2))
-                base_chn *= 2
-                feature_chn = base_chn
-            self.feature_extractor = nn.Sequential(*feature_extractor)
+        # else:
+            # feature_extractor = []
+            # feature_chn = in_channels + 1 if cond_mask else in_channels
+            # base_chn = 16
+            # for ii in range(int(math.log(lq_size / image_size) / math.log(2))):
+            #     feature_extractor.append(nn.Conv2d(feature_chn, base_chn, 3, 1, 1))
+            #     feature_extractor.append(nn.SiLU())
+            #     feature_extractor.append(Downsample(base_chn, True, out_channels=base_chn*2))
+            #     base_chn *= 2
+            #     feature_chn = base_chn
+            # self.feature_extractor = nn.Sequential(*feature_extractor)
 
         ch = input_ch = int(channel_mult[0] * model_channels)
         #in_channels += base_chn
 
         ##here
-        if base_chn > 10:
-            in_channels = 3 + base_chn
-        else:
-            in_channels += base_chn
+        # if base_chn > 10:
+        #     in_channels = 3 + base_chn
+        # else:
+        #     in_channels += base_chn
+        # in_channels = 
 
         self.input_blocks = nn.ModuleList(
             [TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1))]

@@ -12,7 +12,9 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 
-from .basic_ops import normalization
+import os, sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from basic_ops import normalization
 
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
