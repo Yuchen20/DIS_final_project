@@ -8,6 +8,7 @@ from transformers import Trainer, TrainingArguments
 from data_loader import DiffusionDataset
 from noise_scheduling import CFG, DiffusionScheduler
 import segmentation_models_pytorch as smp
+import matplotlib.pyplot as plt
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../models')))
 from plain_unet import UNet
 
@@ -110,20 +111,35 @@ class NormalTrainer(Trainer):
         # Log images every 100 steps
         step = self.state.global_step
         if step and step % 100 == 0:
-            source_img = sources[0].detach().cpu().numpy()
-            pred_img = outputs[0].detach().cpu().numpy()
-            target_img = targets[0].detach().cpu().numpy()
+            # Get first item in batch
+            source_img = sources[0].detach().cpu().numpy()  # [5, 512, 512]
+            pred_img = outputs[0].detach().cpu().numpy()    # [5, 512, 512]
+            target_img = targets[0].detach().cpu().numpy()  # [5, 512, 512]
             
-            # Convert to H,W,C for visualization
-            source_img = np.transpose(source_img, (1,2,0))
-            pred_img = np.transpose(pred_img, (1,2,0))
-            target_img = np.transpose(target_img, (1,2,0))
+            # Create figure with 2 rows (gt and pred) and 5 columns (channels)
+            fig, axes = plt.subplots(2, 5, figsize=(20, 8))
             
+            # Plot ground truth channels
+            for i in range(5):
+                axes[0, i].imshow(target_img[i], cmap='viridis')
+                axes[0, i].set_title(f'GT Channel {i+1}')
+                axes[0, i].axis('off')
+            
+            # Plot predicted channels
+            for i in range(5):
+                axes[1, i].imshow(pred_img[i], cmap='viridis')
+                axes[1, i].set_title(f'Pred Channel {i+1}')
+                axes[1, i].axis('off')
+            
+            plt.tight_layout()
+            
+            # Log to wandb
             wandb.log({
-                'source_image': wandb.Image(source_img, caption=f'step_{step}_source'),
-                'predicted_image': wandb.Image(pred_img, caption=f'step_{step}_predicted'),
-                'target_image': wandb.Image(target_img, caption=f'step_{step}_target')
+                'channel_comparison': wandb.Image(fig),
+                'loss': loss.item()
             }, step=step)
+            
+            plt.close(fig)
         
         return (loss, outputs) if return_outputs else loss
 
