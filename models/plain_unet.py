@@ -73,11 +73,11 @@ class UNet(nn.Module):
         self.down1 = Down(64, 128)
         self.down2 = Down(128, 256)
         self.down3 = Down(256, 512)
-        self.down4 = Down(512, 512)
-        self.up1 = Up(512 + 512, 256)
-        self.up2 = Up(256 + 256, 128)
-        self.up3 = Up(128 + 128, 64)
-        self.up4 = Up(64 + 64, 64)
+        self.down4 = Down(512, 1024)
+        self.up1 = Up(1024, 512)
+        self.up2 = Up(512, 256)
+        self.up3 = Up(256, 128)
+        self.up4 = Up(128, 64)
         self.outc = OutConv(64, out_channels)
 
     def forward(self, x):
