@@ -10,13 +10,28 @@ from noise_scheduling import DiffusionScheduler, CFG
 def process_and_resize_image(filepath, img_size=(512, 512)):
     """
     Load a TIFF image, apply percentile clipping for contrast, resize, and return as numpy array.
+    Handles edge cases where image might be uniform or have invalid values.
     """
     img = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
     if img is None:
         raise FileNotFoundError(f"Image not found: {filepath}")
+    
+    # Handle NaN and inf values
+    img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    # Get percentiles
     p5, p95 = np.percentile(img, [5, 95])
+    
+    # Handle case where p5 equals p95 (uniform image)
+    if p5 == p95:
+        # If image is uniform, return zeros
+        return np.zeros(img_size, dtype=np.uint8)
+    
+    # Clip and normalize
     img = np.clip(img, p5, p95)
     img = ((img - p5) / (p95 - p5) * 255).astype(np.uint8)
+    
+    # Resize
     return cv2.resize(img, img_size, interpolation=cv2.INTER_AREA)
 
 class DiffusionDataset(Dataset):
