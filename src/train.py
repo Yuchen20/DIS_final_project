@@ -78,6 +78,7 @@ class DiffusionTrainer(Trainer):
         coefs = torch.stack(coefs).view(batch_size, 1, 1, 1)
         print(f"ts: {ts}, {ts.shape}")
         print(f"noisy: {noisy.shape}")
+        print(model)
         # forward pass
         outputs = model(noisy, ts)  # ts is already in the correct format
         # mse loss scaled by coef
@@ -232,15 +233,17 @@ def main():
     if config.use_diffusion:
         model = UNetModelSwin(
             image_size=512, 
-            in_channels=len(source_channels), 
+            in_channels=5, 
             model_channels=128, 
-            out_channels=len(target_channels), 
+            out_channels=5, 
             num_res_blocks=2, 
             attention_resolutions=(256, 128, 64), 
             cond_lq=False
         )
+        print(f"using swin unet")
     else:
         model = UNet(in_channels=len(source_channels), out_channels=len(target_channels))
+        print(f"using plain unet")
 
     # speed up with torch.compile
     try:
