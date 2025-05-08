@@ -177,6 +177,7 @@ class DiffusionScheduler:
         return alpha_t_val / denominator
 
 
+
     def get_noisy_image(
         self,
         t: int,

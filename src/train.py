@@ -22,7 +22,7 @@ class TrainConfig:
     learning_rate: float = 5e-5
     num_train_epochs: int = 10
     per_device_train_batch_size: int = 2
-    per_device_eval_batch_size: int = 16
+    per_device_eval_batch_size: int = 4
     weight_decay: float = 0.0
     lr_scheduler_type: str = 'cosine'
     warmup_steps: int = 5000
@@ -35,9 +35,9 @@ class TrainConfig:
     output_dir: str = 'results'
     # diffusion params
     kappa: float = 2.0
-    p: float = 0.5
+    p: float = 0.3
     eta_T: float = 0.999
-    T: int = 50
+    T: int = 15
     # training mode
     use_diffusion: bool = True
 
@@ -90,18 +90,42 @@ class DiffusionTrainer(Trainer):
 
         # log images every 100 steps
         step = self.state.global_step
-        if step and step % 1000 == 0:
-            # log first item in batch
-            noisy_img = noisy[0].detach().cpu().numpy()
-            denoised_img = outputs[0].detach().cpu().numpy()
-            # reshape for wandb (C,H,W) or (H,W,C)
-            # convert to H,W,C
-            noisy_img = np.transpose(noisy_img, (1,2,0))
-            denoised_img = np.transpose(denoised_img, (1,2,0))
+        if step and step % 500 == 0:
+            # Get first item in batch
+            noisy_img = noisy[0].detach().cpu().numpy()  # [5, 512, 512]
+            denoised_img = outputs[0].detach().cpu().numpy()  # [5, 512, 512]
+            target_img = targets[0].detach().cpu().numpy()  # [5, 512, 512]
+            
+            # Create figure with 3 rows (noisy, denoised, target) and 5 columns (channels)
+            fig, axes = plt.subplots(3, 5, figsize=(20, 12))
+            
+            # Plot noisy channels
+            for i in range(5):
+                axes[0, i].imshow(noisy_img[i], cmap='viridis')
+                axes[0, i].set_title(f'Noisy Channel {i+1}')
+                axes[0, i].axis('off')
+            
+            # Plot denoised channels
+            for i in range(5):
+                axes[1, i].imshow(denoised_img[i], cmap='viridis')
+                axes[1, i].set_title(f'Denoised Channel {i+1}')
+                axes[1, i].axis('off')
+            
+            # Plot target channels
+            for i in range(5):
+                axes[2, i].imshow(target_img[i], cmap='viridis')
+                axes[2, i].set_title(f'Target Channel {i+1}')
+                axes[2, i].axis('off')
+            
+            plt.tight_layout()
+            
+            # Log to wandb
             wandb.log({
-                'noisy_image': wandb.Image(noisy_img, caption=f'step_{step}_noisy'),
-                'denoised_image': wandb.Image(denoised_img, caption=f'step_{step}_denoised')
+                'channel_comparison': wandb.Image(fig),
+                'loss': loss.item()
             }, step=step)
+            
+            plt.close(fig)
 
         return (loss, outputs) if return_outputs else loss
 
@@ -267,13 +291,14 @@ def main():
         warmup_steps=config.warmup_steps,
         logging_steps=config.logging_steps,
         eval_strategy=config.evaluation_strategy,
-        eval_steps=100,
+        # eval_steps=100,
         save_strategy=config.save_strategy,
-        save_steps=100,
+        # save_steps=100,
         load_best_model_at_end=config.load_best_model_at_end,
         fp16=config.fp16,
         report_to=config.report_to,
-        dataloader_num_workers=num_workers
+        dataloader_num_workers=num_workers,
+        max_grad_norm=1.0,
     )
 
     if config.use_diffusion:
