@@ -68,7 +68,7 @@ class DiffusionTrainer(Trainer):
         batch_size = sources.size(0)
         
         # sample random t for each example
-        ts = torch.randint(0, self.scheduler.config.T, (batch_size,), device=device)
+        ts = torch.randint(1, self.scheduler.config.T + 1, (batch_size,), device=device)
         
         # generate noisy inputs and coefs
         noisy = []
