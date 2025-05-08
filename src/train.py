@@ -23,7 +23,7 @@ class TrainConfig:
     num_train_epochs: int = 10
     per_device_train_batch_size: int = 2
     per_device_eval_batch_size: int = 4
-    weight_decay: float = 0.0
+    weight_decay: float = 0.005
     lr_scheduler_type: str = 'cosine'
     warmup_steps: int = 5000
     logging_steps: int = 10
@@ -84,10 +84,17 @@ class DiffusionTrainer(Trainer):
         
         # forward pass
         outputs = model(noisy, ts)
-        
-        # mse loss scaled by coef
-        loss = ((outputs - targets).pow(2) * coefs).mean()
 
+        
+        diff = outputs - targets
+        squared_diff = diff.pow(2)
+        squared_diff = torch.clamp(squared_diff, min=1e-8, max=1e8)
+        loss = (squared_diff * coefs).mean()
+
+        if torch.isnan(loss):
+            print(f"Warning: NaN loss detected at step {self.state.global_step}")
+            loss = torch.tensor(1000.0, device=device, requires_grad=True)
+    
         # log images every 100 steps
         step = self.state.global_step
         if step and step % 500 == 0:
