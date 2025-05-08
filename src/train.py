@@ -159,7 +159,7 @@ class DiffusionTrainer(Trainer):
             outputs = model(noisy, t)
             
             # Compute loss
-            loss = ((outputs - targets).pow(2) * coef).mean()
+            loss = ((outputs - targets).pow(2)).mean()
             
         return (loss, None, None)  # Only return loss for validation
 
