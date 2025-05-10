@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
-from models.networks import UnetGenerator, NLayerDiscriminator, GANLoss
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../models')))
+from networks import UnetGenerator, NLayerDiscriminator, GANLoss
 
 class Pix2PixModel(nn.Module):
     def __init__(self, input_nc=3, output_nc=3, ngf=64, ndf=64, norm='batch', use_dropout=False):
