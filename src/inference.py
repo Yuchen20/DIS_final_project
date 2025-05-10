@@ -16,7 +16,7 @@ import wandb
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../models')))
 from plain_unet import UNet
 from unet import UNetModelSwin
-from pix2pix import Pix2PixMode
+from pix2pix import Pix2PixModel
 
 class BasePredictor(ABC):
     """Base class for model predictors"""
