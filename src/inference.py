@@ -309,14 +309,14 @@ def save_metrics_to_csv(metrics, filename, prefix, channel_idx):
 
 def save_predictions(pred, target, prefix, output_dir):
     """Save prediction and target as separate npz files"""
-    # Create directory
-    os.makedirs(output_dir, exist_ok=True)
-    
+    # Create directory    
     # Save prediction and target as separate npz files
     npz_path_target = os.path.join(output_dir, f'{prefix}_target.npz')
     npz_path_pred = os.path.join(output_dir, f'{prefix}_pred.npz')
-    np.savez(npz_path_target, target=target)
-    np.savez(npz_path_pred, pred=pred)
+
+    np.save(npz_path_target, target)
+    np.save(npz_path_pred, pred)
+    print(f"Saved target and prediction for {prefix} to {output_dir}")
 
 def main():
     args = parse_args()
@@ -355,6 +355,8 @@ def main():
     
     # Create metrics CSV file
     metrics_file = os.path.join(args.output_dir, 'metrics.csv')
+    os.makedirs(os.path.join(args.output_dir, 'predictions'), exist_ok=True)
+
     
     # Run inference
     for batch_idx, batch in enumerate(tqdm(test_loader, desc="Running inference")):
@@ -380,11 +382,11 @@ def main():
             metrics = calculate_metrics(output[i], target[i])
             
             # Save metrics for each channel
-            for ch_idx in range(3):  # 3 channels for pix2pix
+            for ch_idx in range(5):  # 3 channels for pix2pix
                 save_metrics_to_csv(metrics, metrics_file, prefix[i], ch_idx)
             
             # Save predictions and targets
-            save_predictions(output[i], target[i], prefix[i], args.output_dir)
+            save_predictions(output[i], target[i], prefix[i], os.path.join(args.output_dir, 'predictions'))
     
     # Close wandb
     wandb.finish()
