@@ -141,9 +141,11 @@ class DiffusionScheduler:
         if t > self.config.T:
              print(f"Warning: Calculating alpha_t for t={t} which is > config.T={self.config.T}.")
              # We will allow it for formula consistency, but it might indicate incorrect usage.
+        if t == 1:
+            return self.get_eta_t(t)
 
         # get_beta_t handles the t-1=0 case internally
-        return self.get_beta_t(t) - self.get_beta_t(t - 1)
+        return self.get_eta_t(t) - self.get_eta_t(t - 1)
 
     @functools.lru_cache(maxsize=None) # Cache all results for t=1 to T
     def get_loss_coef(self, t: int) -> torch.Tensor:
