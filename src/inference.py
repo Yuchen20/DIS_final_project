@@ -344,8 +344,8 @@ def main():
     # Create test dataset
     test_dataset = DiffusionDataset(
         csv_file_list=test_csv_list,
-        source_channels=[7, 7, 7],  # 3 input channels
-        target_channels=[1, 2, 3],  # 3 output channels
+        source_channels=[7, 7, 7, 7, 7],  # 3 input channels
+        target_channels=[1, 2, 3, 4, 5],  # 3 output channels
         img_size=(512, 512),
         get_prefix=True
     )
