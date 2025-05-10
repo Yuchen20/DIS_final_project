@@ -30,6 +30,18 @@ class BasePredictor(ABC):
         """Load the model from checkpoint"""
         pass
 
+    def _load_hf_checkpoint(self, model_path):
+        """Helper method to load Hugging Face Trainer checkpoint"""
+        if os.path.isdir(model_path):
+            # For Hugging Face Trainer saved models
+            checkpoint_path = os.path.join(model_path, 'pytorch_model.bin')
+            if not os.path.exists(checkpoint_path):
+                raise ValueError(f"Could not find model weights at {checkpoint_path}")
+            return torch.load(checkpoint_path, map_location=self.device)
+        else:
+            # For regular checkpoint files
+            return torch.load(model_path, map_location=self.device)
+
     @abstractmethod
     def predict(self, sources):
         """Run inference on input sources"""
@@ -77,7 +89,7 @@ class UNetPredictor(BasePredictor):
     """Predictor for standard UNet model"""
     def load_model(self, model_path):
         model = UNet(in_channels=5, out_channels=5)
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = self._load_hf_checkpoint(model_path)
         model.load_state_dict(checkpoint['model_state_dict'])
         model = model.to(self.device)
         return model
@@ -99,7 +111,7 @@ class SwinUNetPredictor(BasePredictor):
             attention_resolutions=(256, 128, 64),
             cond_lq=False
         )
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = self._load_hf_checkpoint(model_path)
         model.load_state_dict(checkpoint['model_state_dict'])
         model = model.to(self.device)
         return model
@@ -196,7 +208,7 @@ class Pix2PixPredictor(BasePredictor):
             norm='batch',
             use_dropout=False  # No dropout during inference
         )
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = self._load_hf_checkpoint(model_path)
         model.load_state_dict(checkpoint['model_state_dict'])
         model = model.to(self.device)
         return model.generator  # Only use generator for inference
