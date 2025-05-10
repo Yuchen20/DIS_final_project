@@ -310,13 +310,14 @@ def save_metrics_to_csv(metrics, filename, prefix, channel_idx):
 def save_predictions(pred, target, prefix, output_dir):
     """Save prediction and target as separate npz files"""
     # Create directory    
+    os.makedirs(output_dir, exist_ok=True)  
+    prefix = prefix.split('/')[-1]
     # Save prediction and target as separate npz files
-    npz_path_target = os.path.join(output_dir, f'{prefix}_target.npz')
-    npz_path_pred = os.path.join(output_dir, f'{prefix}_pred.npz')
+    npz_path_target = os.path.join(output_dir, f'{prefix}_target.npy')
+    npz_path_pred = os.path.join(output_dir, f'{prefix}_pred.npy')
 
     np.save(npz_path_target, target)
     np.save(npz_path_pred, pred)
-    print(f"Saved target and prediction for {prefix} to {output_dir}")
 
 def main():
     args = parse_args()
