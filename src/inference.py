@@ -337,3 +337,9 @@ if __name__ == '__main__':
     main() 
 
 
+# To run the script:
+## For UNet:
+# python inference.py --model_path /path/to/unet_checkpoint.pth --model_type unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/unet
+
+## For Swin UNet:
+# python inference.py --model_path /home/ym429/rds/hpc-work/dissertation/models/swin_unet_checkpoint.pth --model_type swin_unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/swin_unet

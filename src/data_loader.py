@@ -38,13 +38,14 @@ class DiffusionDataset(Dataset):
     """
     Dataset that reads partial paths from CSVs, loads multi-channel TIFFs, and returns source/target tensors.
     """
-    def __init__(self, csv_file_list, images_dir = '/home/ym429/rds/hpc-work/dissertation', source_channels=[1,2,3], target_channels=[4,5,6], img_size=(512,512), transform=None, normalize=True):
+    def __init__(self, csv_file_list, images_dir = '/home/ym429/rds/hpc-work/dissertation', source_channels=[1,2,3], target_channels=[4,5,6], img_size=(512,512), transform=None, normalize=True, get_prefix=False):
         self.samples = []  # list of (directory, partial_path)
         self.source_channels = source_channels
         self.target_channels = target_channels
         self.img_size = img_size
         self.transform = transform
         self.normalize = normalize
+        self.get_prefix = get_prefix
 
         for csv_path in csv_file_list:
             with open(csv_path, 'r', newline='') as f:
@@ -69,7 +70,10 @@ class DiffusionDataset(Dataset):
             return tensor
         source = load_chs(self.source_channels)
         target = load_chs(self.target_channels)
-        return source, target
+        if self.get_prefix: 
+            return source, target, os.path.join(base_dir, f"{prefix}")
+        else:
+            return source, target
     def load_all_channels(self, idx, channels=None):
         base_dir, prefix = self.samples[idx]
         chs = channels if channels is not None else list(range(1,9))
