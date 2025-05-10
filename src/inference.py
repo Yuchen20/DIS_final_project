@@ -35,7 +35,6 @@ class BasePredictor(ABC):
         """Load the model from checkpoint"""
         pass
 
-
     def _load_hf_checkpoint(self, model_path):
         """Helper method to load Hugging Face Trainer checkpoint"""
         if os.path.isdir(model_path):
@@ -58,18 +57,6 @@ class BasePredictor(ABC):
         else:
             # For regular checkpoint files
             return torch.load(model_path, map_location=self.device)
-
-def load_model(self, model_path):
-    if model_path.endswith(".safetensors") or "safetensors" in model_path:
-        checkpoint = load_safetensors(model_path, device=self.device)
-        model.load_state_dict(checkpoint)
-    else:
-        checkpoint = torch.load(model_path, map_location=self.device)
-        if "model_state_dict" in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
-        else:
-            model.load_state_dict(checkpoint)
-
 
     @abstractmethod
     def predict(self, sources):
@@ -128,6 +115,44 @@ class UNetPredictor(BasePredictor):
             sources = sources.to(self.device)
             return self.model(sources)
 
+    def log_images(self, sources, predictions, targets, step):
+        """Log images to wandb"""
+        if step % 50 == 0:
+            # Get first image from batch
+            source_img = sources[0].detach().cpu().numpy()
+            pred_img = predictions[0].detach().cpu().numpy()
+            target_img = targets[0].detach().cpu().numpy()
+            
+            # Create figure with 3 rows (source, prediction, target) and 5 columns (channels)
+            fig, axes = plt.subplots(3, 5, figsize=(20, 12))
+            
+            # Plot source channels
+            for j in range(5):
+                axes[0, j].imshow(source_img[j], cmap='viridis')
+                axes[0, j].set_title(f'Source Channel {j+1}')
+                axes[0, j].axis('off')
+            
+            # Plot prediction channels
+            for j in range(5):
+                axes[1, j].imshow(pred_img[j], cmap='viridis')
+                axes[1, j].set_title(f'Pred Channel {j+1}')
+                axes[1, j].axis('off')
+            
+            # Plot target channels
+            for j in range(5):
+                axes[2, j].imshow(target_img[j], cmap='viridis')
+                axes[2, j].set_title(f'Target Channel {j+1}')
+                axes[2, j].axis('off')
+            
+            plt.tight_layout()
+            
+            # Log to wandb
+            wandb.log({
+                'inference_comparison': wandb.Image(fig),
+            }, step=step)
+            
+            plt.close(fig)
+
 class SwinUNetPredictor(BasePredictor):
     """Predictor for Swin UNet model with diffusion process"""
     def load_model(self, model_path):
@@ -169,62 +194,29 @@ class SwinUNetPredictor(BasePredictor):
 
     def log_images(self, sources, predictions, targets, step):
         """Override log_images to include diffusion process"""
-        if step % 50 == 0:
-            # Get first image from batch
-            source_img = sources[0].detach().cpu().numpy()
-            pred_img = predictions[0].detach().cpu().numpy()
-            target_img = targets[0].detach().cpu().numpy()
+        # First call parent class's log_images
+        super().log_images(sources, predictions, targets, step)
+        
+        # Then log diffusion process if we have intermediate results
+        if step % 50 == 0 and hasattr(self, 'intermediate_results'):
+            # Create figure for diffusion process
+            n_steps = len(self.intermediate_results)
+            fig, axes = plt.subplots(n_steps, 5, figsize=(20, 4*n_steps))
             
-            # Create figure with 3 rows (source, prediction, target) and 5 columns (channels)
-            fig, axes = plt.subplots(3, 5, figsize=(20, 12))
-            
-            # Plot source channels
-            for j in range(5):
-                axes[0, j].imshow(source_img[j], cmap='viridis')
-                axes[0, j].set_title(f'Source Channel {j+1}')
-                axes[0, j].axis('off')
-            
-            # Plot prediction channels
-            for j in range(5):
-                axes[1, j].imshow(pred_img[j], cmap='viridis')
-                axes[1, j].set_title(f'Pred Channel {j+1}')
-                axes[1, j].axis('off')
-            
-            # Plot target channels
-            for j in range(5):
-                axes[2, j].imshow(target_img[j], cmap='viridis')
-                axes[2, j].set_title(f'Target Channel {j+1}')
-                axes[2, j].axis('off')
+            for i, step_result in enumerate(self.intermediate_results):
+                for j in range(5):
+                    axes[i, j].imshow(step_result[0, j], cmap='viridis')
+                    axes[i, j].set_title(f'Step {n_steps-i} Channel {j+1}')
+                    axes[i, j].axis('off')
             
             plt.tight_layout()
             
-            # Log comparison to wandb
+            # Log diffusion process to wandb
             wandb.log({
-                'inference_comparison': wandb.Image(fig),
+                'diffusion_process': wandb.Image(fig),
             }, step=step)
             
             plt.close(fig)
-            
-            # Log diffusion process
-            if hasattr(self, 'intermediate_results'):
-                # Create figure for diffusion process
-                n_steps = len(self.intermediate_results)
-                fig, axes = plt.subplots(n_steps, 5, figsize=(20, 4*n_steps))
-                
-                for i, step_result in enumerate(self.intermediate_results):
-                    for j in range(5):
-                        axes[i, j].imshow(step_result[0, j], cmap='viridis')
-                        axes[i, j].set_title(f'Step {n_steps-i} Channel {j+1}')
-                        axes[i, j].axis('off')
-                
-                plt.tight_layout()
-                
-                # Log diffusion process to wandb
-                wandb.log({
-                    'diffusion_process': wandb.Image(fig),
-                }, step=step)
-                
-                plt.close(fig)
 
 class Pix2PixPredictor(BasePredictor):
     """Predictor for Pix2Pix model"""
