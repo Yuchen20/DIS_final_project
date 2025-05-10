@@ -78,7 +78,7 @@ def load_model(self, model_path):
 
     def log_images(self, sources, predictions, targets, step):
         """Log images to wandb for all predictors"""
-        if step % 1000 == 0:
+        if step % 50 == 0:
             # Get first image from batch
             source_img = sources[0].detach().cpu().numpy()
             pred_img = predictions[0].detach().cpu().numpy()
@@ -169,7 +169,7 @@ class SwinUNetPredictor(BasePredictor):
 
     def log_images(self, sources, predictions, targets, step):
         """Override log_images to include diffusion process"""
-        if step % 1000 == 0:
+        if step % 50 == 0:
             # Get first image from batch
             source_img = sources[0].detach().cpu().numpy()
             pred_img = predictions[0].detach().cpu().numpy()
