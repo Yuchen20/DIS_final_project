@@ -14,6 +14,9 @@ from noise_scheduling import DiffusionScheduler, CFG
 import wandb
 from safetensors.torch import load_file as load_safetensors
 
+# Assume `model_weights` is loaded from safetensors
+from collections import OrderedDict
+
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../models')))
 from plain_unet import UNet
@@ -41,7 +44,13 @@ class BasePredictor(ABC):
             bin_path = os.path.join(model_path, 'pytorch_model.bin')
 
             if os.path.exists(safetensors_path):
-                return load_safetensors(safetensors_path, device=self.device)
+                state_dict = load_safetensors(safetensors_path, device=self.device)
+                new_state_dict = OrderedDict()
+                for k, v in state_dict.items():
+                    new_key = k.replace("_orig_mod.", "")  # remove the prefix
+                    new_state_dict[new_key] = v
+
+                return new_state_dict
             elif os.path.exists(bin_path):
                 return torch.load(bin_path, map_location=self.device)
             else:
