@@ -3,8 +3,6 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from data_loader import DiffusionDataset, visualize_image_channels
-from models.plain_unet import UNet
-from models.unet import UNetModelSwin
 import argparse
 from tqdm import tqdm
 import csv
@@ -14,6 +12,11 @@ import datetime
 from abc import ABC, abstractmethod
 from noise_scheduling import DiffusionScheduler, CFG
 import wandb
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../models')))
+from plain_unet import UNet
+from unet import UNetModelSwin
+from pix2pix import Pix2PixMode
 
 class BasePredictor(ABC):
     """Base class for model predictors"""
@@ -182,22 +185,42 @@ class SwinUNetPredictor(BasePredictor):
                 
                 plt.close(fig)
 
+class Pix2PixPredictor(BasePredictor):
+    """Predictor for Pix2Pix model"""
+    def load_model(self, model_path):
+        model = Pix2PixModel(
+            input_nc=3,  # 3 input channels
+            output_nc=3,  # 3 output channels
+            ngf=64,
+            ndf=64,
+            norm='batch',
+            use_dropout=False  # No dropout during inference
+        )
+        checkpoint = torch.load(model_path, map_location=self.device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model = model.to(self.device)
+        return model.generator  # Only use generator for inference
+
+    def predict(self, sources):
+        with torch.no_grad():
+            sources = sources.to(self.device)
+            return self.model(sources)
+
 def get_predictor(model_type, model_path, device):
     """Factory function to get the appropriate predictor"""
-    predictors = {
-        'unet': UNetPredictor,
-        'swin_unet': SwinUNetPredictor,
-    }
-    
-    if model_type not in predictors:
-        raise ValueError(f"Unknown model type: {model_type}. Available types: {list(predictors.keys())}")
-    
-    return predictors[model_type](model_path, device)
+    if model_type == 'unet':
+        return UNetPredictor(model_path, device)
+    elif model_type == 'swin_unet':
+        return SwinUNetPredictor(model_path, device)
+    elif model_type == 'pix2pix':
+        return Pix2PixPredictor(model_path, device)
+    else:
+        raise ValueError(f'Unknown model type: {model_type}')
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Run inference with UNet model')
     parser.add_argument('--model_path', type=str, required=True, help='Path to the trained model checkpoint')
-    parser.add_argument('--model_type', type=str, required=True, choices=['unet', 'swin_unet'], help='Type of model to use')
+    parser.add_argument('--model_type', type=str, required=True, choices=['unet', 'swin_unet', 'pix2pix'], help='Type of model to use')
     parser.add_argument('--output_dir', type=str, required=True, help='Directory to save inference results')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for inference')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to run inference on')
@@ -280,8 +303,8 @@ def main():
     # Create test dataset
     test_dataset = DiffusionDataset(
         csv_file_list=test_csv_list,
-        source_channels=[7, 7, 7, 7, 7],
-        target_channels=[1, 2, 3, 4, 5],
+        source_channels=[7, 7, 7],  # 3 input channels
+        target_channels=[1, 2, 3],  # 3 output channels
         img_size=(512, 512),
         get_prefix=True
     )
@@ -324,7 +347,7 @@ def main():
             metrics = calculate_metrics(output[i], target[i])
             
             # Save metrics for each channel
-            for ch_idx in range(5):
+            for ch_idx in range(3):  # 3 channels for pix2pix
                 save_metrics_to_csv(metrics, metrics_file, prefix[i], ch_idx)
             
             # Save predictions and targets
@@ -339,7 +362,10 @@ if __name__ == '__main__':
 
 # To run the script:
 ## For UNet:
-# python inference.py --model_path /path/to/unet_checkpoint.pth --model_type unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/unet
+# accelerate run src/inference.py --model_path /home/ym429/rds/hpc-work/dissertation/results/Unet/model.safetensors --model_type unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/unet
 
 ## For Swin UNet:
 # python inference.py --model_path /home/ym429/rds/hpc-work/dissertation/models/swin_unet_checkpoint.pth --model_type swin_unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/swin_unet
+
+## For Pix2Pix:
+# python inference.py --model_path /path/to/pix2pix_checkpoint.pth --model_type pix2pix --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/pix2pix

@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../models')))
 from plain_unet import UNet
 from unet import UNetModelSwin
+from pix2pix import Pix2PixModel
 
 
 # 1. Configuration
@@ -40,6 +41,7 @@ class TrainConfig:
     T: int = 15
     # training mode
     use_diffusion: bool = True
+    use_pix2pix: bool = False
 
 
 
@@ -228,6 +230,99 @@ class NormalTrainer(Trainer):
             
         return (loss, None, None)  # Only return loss, no need to store outputs and targets
 
+class Pix2PixTrainer(Trainer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Initialize optimizers for generator and discriminator
+        self.optimizer_G = torch.optim.Adam(
+            self.model.generator.parameters(),
+            lr=self.args.learning_rate,
+            betas=(0.5, 0.999)
+        )
+        self.optimizer_D = torch.optim.Adam(
+            self.model.discriminator.parameters(),
+            lr=self.args.learning_rate,
+            betas=(0.5, 0.999)
+        )
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        sources = inputs['source']
+        targets = inputs['target']
+        device = sources.device
+        batch_size = sources.size(0)
+        
+        # Generate fake images
+        fake_targets = model(sources)
+        
+        # Update discriminator
+        self.optimizer_D.zero_grad()
+        loss_D, loss_D_real, loss_D_fake = model.compute_discriminator_loss(sources, targets, fake_targets)
+        loss_D.backward()
+        self.optimizer_D.step()
+        
+        # Update generator
+        self.optimizer_G.zero_grad()
+        loss_G, loss_G_GAN, loss_G_L1 = model.compute_generator_loss(sources, targets, fake_targets)
+        loss_G.backward()
+        self.optimizer_G.step()
+        
+        # Log images every 1000 steps
+        step = self.state.global_step
+        if step and step % 1000 == 0:
+            # Get first item in batch
+            source_img = sources[0].detach().cpu().numpy()
+            fake_img = fake_targets[0].detach().cpu().numpy()
+            target_img = targets[0].detach().cpu().numpy()
+            
+            # Create figure with 3 rows (source, fake, target) and 3 columns (channels)
+            fig, axes = plt.subplots(3, 3, figsize=(15, 15))
+            
+            # Plot source channels
+            for j in range(3):
+                axes[0, j].imshow(source_img[j], cmap='viridis')
+                axes[0, j].set_title(f'Source Channel {j+1}')
+                axes[0, j].axis('off')
+            
+            # Plot fake channels
+            for j in range(3):
+                axes[1, j].imshow(fake_img[j], cmap='viridis')
+                axes[1, j].set_title(f'Fake Channel {j+1}')
+                axes[1, j].axis('off')
+            
+            # Plot target channels
+            for j in range(3):
+                axes[2, j].imshow(target_img[j], cmap='viridis')
+                axes[2, j].set_title(f'Target Channel {j+1}')
+                axes[2, j].axis('off')
+            
+            plt.tight_layout()
+            
+            # Log to wandb
+            wandb.log({
+                'pix2pix_comparison': wandb.Image(fig),
+                'loss_G': loss_G.item(),
+                'loss_G_GAN': loss_G_GAN.item(),
+                'loss_G_L1': loss_G_L1.item(),
+                'loss_D': loss_D.item(),
+                'loss_D_real': loss_D_real.item(),
+                'loss_D_fake': loss_D_fake.item()
+            }, step=step)
+            
+            plt.close(fig)
+        
+        return (loss_G, fake_targets) if return_outputs else loss_G
+
+    def prediction_step(self, model, inputs, *args, **kwargs):
+        """Override prediction step to handle dictionary inputs"""
+        sources = inputs['source']
+        targets = inputs['target']
+        
+        with torch.no_grad():
+            fake_targets = model(sources)
+            loss_G, loss_G_GAN, loss_G_L1 = model.compute_generator_loss(sources, targets, fake_targets)
+            
+        return (loss_G, None, None)  # Only return loss for validation
+
 # 5. Main training function
 def main():
     # config = TrainConfig()
@@ -268,26 +363,6 @@ def main():
         img_size=(512, 512)
     )
 
-    if config.use_diffusion:
-        model = UNetModelSwin(
-            image_size=512, 
-            in_channels=5, 
-            model_channels=128, 
-            out_channels=5, 
-            num_res_blocks=2, 
-            attention_resolutions=(256, 128, 64), 
-            cond_lq=False
-        )
-        print(f"using swin unet")
-    else:
-        model = UNet(in_channels=len(source_channels), out_channels=len(target_channels))
-        print(f"using plain unet")
-        try:
-            model = torch.compile(model)
-        except Exception:
-            pass
-
-
     # training arguments
     training_args = TrainingArguments(
         output_dir=config.output_dir,
@@ -311,7 +386,16 @@ def main():
     )
 
     if config.use_diffusion:
-        # Initialize diffusion scheduler
+        model = UNetModelSwin(
+            image_size=512, 
+            in_channels=5, 
+            model_channels=128, 
+            out_channels=5, 
+            num_res_blocks=2, 
+            attention_resolutions=(256, 128, 64), 
+            cond_lq=False
+        )
+        print(f"using swin unet")
         scheduler = DiffusionScheduler(CFG(config.kappa, config.p, config.eta_T, config.T))
         trainer = DiffusionTrainer(
             scheduler=scheduler,
@@ -321,7 +405,30 @@ def main():
             eval_dataset=eval_dataset,
             data_collator=data_collator
         )
+    elif config.use_pix2pix:
+        model = Pix2PixModel(
+            input_nc=3,  # 3 input channels
+            output_nc=3,  # 3 output channels
+            ngf=64,
+            ndf=64,
+            norm='batch',
+            use_dropout=True
+        )
+        print(f"using pix2pix")
+        trainer = Pix2PixTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            data_collator=data_collator
+        )
     else:
+        model = UNet(in_channels=len(source_channels), out_channels=len(target_channels))
+        print(f"using plain unet")
+        try:
+            model = torch.compile(model)
+        except Exception:
+            pass
         trainer = NormalTrainer(
             model=model,
             args=training_args,
