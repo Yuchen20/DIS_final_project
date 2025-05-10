@@ -12,6 +12,8 @@ import datetime
 from abc import ABC, abstractmethod
 from noise_scheduling import DiffusionScheduler, CFG
 import wandb
+from safetensors.torch import load_file as load_safetensors
+
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../models')))
 from plain_unet import UNet
@@ -30,17 +32,24 @@ class BasePredictor(ABC):
         """Load the model from checkpoint"""
         pass
 
+
     def _load_hf_checkpoint(self, model_path):
         """Helper method to load Hugging Face Trainer checkpoint"""
         if os.path.isdir(model_path):
             # For Hugging Face Trainer saved models
-            checkpoint_path = os.path.join(model_path, 'pytorch_model.bin')
-            if not os.path.exists(checkpoint_path):
-                raise ValueError(f"Could not find model weights at {checkpoint_path}")
-            return torch.load(checkpoint_path, map_location=self.device)
+            safetensors_path = os.path.join(model_path, 'model.safetensors')
+            bin_path = os.path.join(model_path, 'pytorch_model.bin')
+
+            if os.path.exists(safetensors_path):
+                return load_safetensors(safetensors_path, device=self.device)
+            elif os.path.exists(bin_path):
+                return torch.load(bin_path, map_location=self.device)
+            else:
+                raise ValueError(f"Could not find model weights at {safetensors_path} or {bin_path}")
         else:
             # For regular checkpoint files
             return torch.load(model_path, map_location=self.device)
+
 
     @abstractmethod
     def predict(self, sources):
