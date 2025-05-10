@@ -50,6 +50,17 @@ class BasePredictor(ABC):
             # For regular checkpoint files
             return torch.load(model_path, map_location=self.device)
 
+def load_model(self, model_path):
+    if model_path.endswith(".safetensors") or "safetensors" in model_path:
+        checkpoint = load_safetensors(model_path, device=self.device)
+        model.load_state_dict(checkpoint)
+    else:
+        checkpoint = torch.load(model_path, map_location=self.device)
+        if "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint)
+
 
     @abstractmethod
     def predict(self, sources):
@@ -99,7 +110,7 @@ class UNetPredictor(BasePredictor):
     def load_model(self, model_path):
         model = UNet(in_channels=5, out_channels=5)
         checkpoint = self._load_hf_checkpoint(model_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(checkpoint)
         model = model.to(self.device)
         return model
 
@@ -121,7 +132,7 @@ class SwinUNetPredictor(BasePredictor):
             cond_lq=False
         )
         checkpoint = self._load_hf_checkpoint(model_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(checkpoint)
         model = model.to(self.device)
         return model
 
@@ -218,7 +229,7 @@ class Pix2PixPredictor(BasePredictor):
             use_dropout=False  # No dropout during inference
         )
         checkpoint = self._load_hf_checkpoint(model_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(checkpoint)
         model = model.to(self.device)
         return model.generator  # Only use generator for inference
 
