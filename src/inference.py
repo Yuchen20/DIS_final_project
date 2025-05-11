@@ -117,7 +117,7 @@ class UNetPredictor(BasePredictor):
 
     def log_images(self, sources, predictions, targets, step):
         """Log images to wandb"""
-        if step % 50 == 0:
+        if step % 10 == 0:
             # Get first image from batch
             source_img = sources[0].detach().cpu().numpy()
             pred_img = predictions[0].detach().cpu().numpy()
@@ -207,7 +207,7 @@ class SwinUNetPredictor(BasePredictor):
         super().log_images(sources, predictions, targets, step)
         
         # Then log diffusion process if we have intermediate results
-        if step % 20 == 0 and hasattr(self, 'intermediate_results'):
+        if step % 10 == 0 and hasattr(self, 'intermediate_results'):
             # Create figure for diffusion process
             n_steps = len(self.intermediate_results)
             fig, axes = plt.subplots(n_steps, 10, figsize=(20, 4*n_steps))
