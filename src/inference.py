@@ -184,7 +184,7 @@ class SwinUNetPredictor(BasePredictor):
         with torch.no_grad():
             x = x.to(self.device)
             batch_size = x.shape[0]
-            for t in range(config.T + 1, 1, -1):
+            for t in range(config.T, 0, -1):
                 # Create a batch of timesteps
                 timesteps = torch.full((batch_size,), t, device=self.device)
                 output = self.model(x, timesteps)
