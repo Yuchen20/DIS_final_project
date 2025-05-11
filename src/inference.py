@@ -190,9 +190,14 @@ class SwinUNetPredictor(BasePredictor):
                 output = self.model(x, timesteps)
                 coef_1 = scheduler.get_eta_t(t - 1) / scheduler.get_eta_t(t)
                 coef_2 = scheduler.get_alpha_t(t) / scheduler.get_eta_t(t)
-                coef_1, coef_2 = coef_1.to(self.device), coef_2.to(self.device)
-                x = coef_1 * x + coef_2 * output
-                intermediate_results.append(x.cpu().numpy())
+                coef_3 = config.kappa * scheduler.get_eta_t(t - 1) / scheduler.get_eta_t(t) * scheduler.get_alpha_t(t)
+
+                coef_1, coef_2, coef_3 = coef_1.to(self.device), coef_2.to(self.device), coef_3.to(self.device)
+
+                x = coef_1 * x + coef_2 * output + coef_3 * torch.randn_like(x, device=self.device)
+                intermediate_results.append(
+                    (x.detach().cpu().numpy(), output.detach().cpu().numpy())
+                )
         
         return x, intermediate_results
 
@@ -202,14 +207,17 @@ class SwinUNetPredictor(BasePredictor):
         super().log_images(sources, predictions, targets, step)
         
         # Then log diffusion process if we have intermediate results
-        if step % 50 == 0 and hasattr(self, 'intermediate_results'):
+        if step % 20 == 0 and hasattr(self, 'intermediate_results'):
             # Create figure for diffusion process
             n_steps = len(self.intermediate_results)
-            fig, axes = plt.subplots(n_steps, 5, figsize=(20, 4*n_steps))
+            fig, axes = plt.subplots(n_steps, 10, figsize=(20, 4*n_steps))
             
-            for i, step_result in enumerate(self.intermediate_results):
-                for j in range(5):
-                    axes[i, j].imshow(step_result[0, j], cmap='viridis')
+            for i, (x, output) in enumerate(self.intermediate_results):
+                for j in range(10):
+                    if j < 5:
+                        axes[i, j].imshow(x[:, :, j], cmap='viridis')
+                    else:
+                        axes[i, j].imshow(output[:, :, j-5], cmap='viridis')
                     axes[i, j].set_title(f'Step {n_steps-i} Channel {j+1}')
                     axes[i, j].axis('off')
             
