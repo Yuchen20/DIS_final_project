@@ -92,8 +92,7 @@ class DiffusionTrainer(Trainer):
         
         diff = outputs - targets
         squared_diff = diff.pow(2)
-        squared_diff = torch.clamp(squared_diff, min=1e-8, max=1e8)
-        loss = (squared_diff * coefs).mean()
+        loss = (squared_diff).mean()
 
         if torch.isnan(loss):
             print(f"Warning: NaN loss detected at step {self.state.global_step}")
@@ -101,7 +100,7 @@ class DiffusionTrainer(Trainer):
     
         # log images every 100 steps
         step = self.state.global_step
-        if step and step % 500 == 0:
+        if step and step % 50 == 0:
             # Get first item in batch
             noisy_img = noisy[0].detach().cpu().numpy()  # [5, 512, 512]
             denoised_img = outputs[0].detach().cpu().numpy()  # [5, 512, 512]
@@ -389,10 +388,10 @@ def main():
         model = UNetModelSwin(
             image_size=512, 
             in_channels=5, 
-            model_channels=128, 
+            model_channels=160, 
             out_channels=5, 
             num_res_blocks=2, 
-            attention_resolutions=(256, 128, 64), 
+            attention_resolutions=(64,32,16,8), 
             cond_lq=False
         )
         print(f"using swin unet")
