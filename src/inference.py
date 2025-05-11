@@ -184,9 +184,11 @@ class SwinUNetPredictor(BasePredictor):
         with torch.no_grad():
             x = x.to(self.device)
             for t in range(config.T + 1, 1, -1):
+                t = torch.tensor(t, device=self.device)
                 output = self.model(x, t)
                 coef_1 = scheduler.get_eta_t(t - 1) / scheduler.get_eta_t(t)
                 coef_2 = scheduler.get_alpha_t(t) / scheduler.get_eta_t(t)
+                coef_1, coef_2 = coef_1.to(self.device), coef_2.to(self.device)
                 x = coef_1 * x + coef_2 * output
                 intermediate_results.append(x.cpu().numpy())
         
