@@ -213,12 +213,17 @@ class SwinUNetPredictor(BasePredictor):
             fig, axes = plt.subplots(n_steps, 10, figsize=(20, 4*n_steps))
             
             for i, (x, output) in enumerate(self.intermediate_results):
+                # Get first image from batch
+                x_img = x[0]  # Shape: (5, 512, 512)
+                output_img = output[0]  # Shape: (5, 512, 512)
+                
                 for j in range(10):
                     if j < 5:
-                        axes[i, j].imshow(x[:, :, j], cmap='viridis')
+                        axes[i, j].imshow(x_img[j], cmap='viridis')
+                        axes[i, j].set_title(f'Step {n_steps-i} X Channel {j+1}')
                     else:
-                        axes[i, j].imshow(output[:, :, j-5], cmap='viridis')
-                    axes[i, j].set_title(f'Step {n_steps-i} Channel {j+1}')
+                        axes[i, j].imshow(output_img[j-5], cmap='viridis')
+                        axes[i, j].set_title(f'Step {n_steps-i} Output Channel {j-4}')
                     axes[i, j].axis('off')
             
             plt.tight_layout()
