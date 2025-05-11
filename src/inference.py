@@ -183,9 +183,11 @@ class SwinUNetPredictor(BasePredictor):
         
         with torch.no_grad():
             x = x.to(self.device)
+            batch_size = x.shape[0]
             for t in range(config.T + 1, 1, -1):
-                t = torch.tensor(t, device=self.device)
-                output = self.model(x, t)
+                # Create a batch of timesteps
+                timesteps = torch.full((batch_size,), t, device=self.device)
+                output = self.model(x, timesteps)
                 coef_1 = scheduler.get_eta_t(t - 1) / scheduler.get_eta_t(t)
                 coef_2 = scheduler.get_alpha_t(t) / scheduler.get_eta_t(t)
                 coef_1, coef_2 = coef_1.to(self.device), coef_2.to(self.device)
