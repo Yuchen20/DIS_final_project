@@ -157,12 +157,12 @@ class SwinUNetPredictor(BasePredictor):
     """Predictor for Swin UNet model with diffusion process"""
     def load_model(self, model_path):
         model = UNetModelSwin(
-            image_size=512,
-            in_channels=5,
-            model_channels=128,
-            out_channels=5,
-            num_res_blocks=2,
-            attention_resolutions=(256, 128, 64),
+            image_size=512, 
+            in_channels=5, 
+            model_channels=160, 
+            out_channels=5, 
+            num_res_blocks=2, 
+            attention_resolutions=(64,32,16,8), 
             cond_lq=False
         )
         checkpoint = self._load_hf_checkpoint(model_path)
@@ -422,3 +422,6 @@ if __name__ == '__main__':
 
 ## For Pix2Pix:
 # python inference.py --model_path /path/to/pix2pix_checkpoint.pth --model_type pix2pix --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/pix2pix
+
+
+# python inference.py --model_path /home/ym429/rds/hpc-work/dissertation/results/checkpoint-55296 --model_type swin_unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/resshift
