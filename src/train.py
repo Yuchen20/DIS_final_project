@@ -28,8 +28,8 @@ class TrainConfig:
     lr_scheduler_type: str = 'cosine'
     warmup_steps: int = 5000
     logging_steps: int = 10
-    evaluation_strategy: str = 'epoch'
-    save_strategy: str = 'epoch'
+    evaluation_strategy: str = 'steps'
+    save_strategy: str = 'steps'
     load_best_model_at_end: bool = True
     fp16: bool = False
     report_to: str = 'wandb'
@@ -63,6 +63,7 @@ def data_collator(batch):
 class DiffusionTrainer(Trainer):
     def __init__(self, scheduler: DiffusionScheduler, *args, **kwargs):
         self.scheduler = scheduler
+        self._eval_batch_counter = 0
         super().__init__(*args, **kwargs)
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
@@ -85,9 +86,9 @@ class DiffusionTrainer(Trainer):
         
         noisy = torch.stack(noisy)
         coefs = torch.stack(coefs).view(batch_size, 1, 1, 1)
-        
+
         # forward pass
-        outputs = model(noisy, ts)
+        outputs = model(noisy, ts, lq = sources.to(device))
 
         
         diff = outputs - targets
@@ -126,6 +127,9 @@ class DiffusionTrainer(Trainer):
                 axes[2, i].imshow(target_img[i], cmap='viridis')
                 axes[2, i].set_title(f'Target Channel {i+1}')
                 axes[2, i].axis('off')
+
+            # set title as timestemp
+            fig.suptitle(f'Timestep: {ts[0]}', fontsize=16)
             
             plt.tight_layout()
             
@@ -149,7 +153,6 @@ class DiffusionTrainer(Trainer):
         with torch.no_grad():
             # For validation, we'll use a fixed timestep (e.g., T/2) for all samples
             t = torch.full((batch_size,), self.scheduler.config.T // 2, device=device)
-            coef = self.scheduler.get_loss_coef(int(t[0].item())).to(device)  # Ensure coef is on the same device
             
             # Generate noisy images
             noisy = []
@@ -159,10 +162,72 @@ class DiffusionTrainer(Trainer):
             noisy = torch.stack(noisy)
             
             # Get model predictions
-            outputs = model(noisy, t)
+            outputs = model(noisy, t, lq = sources.to(device))
             
             # Compute loss
-            loss = ((outputs - targets).pow(2) * coef).mean()
+            loss = ((outputs - targets).pow(2)).mean()
+
+            # for every 100 validation steps do full diffusion
+            if self._eval_batch_counter % 100 != 1:
+                self._eval_batch_counter += 1
+            else:
+                intermediate_results = []
+                self._eval_batch_counter = 0
+                with torch.no_grad():
+                    # only take the first image in the batch
+                    sources = sources[0].to(device).unsqueeze(0)
+                    targets = targets[0].to(device).unsqueeze(0)
+
+                    x = self.scheduler.get_noisy_image(self.scheduler.config.T, targets, sources)
+                    x = x.to(device)
+                    batch_size = x.shape[0]
+
+                    for t in range(self.scheduler.config.T, 0, -1):
+                        # Create a batch of timesteps
+                        timesteps = torch.full((batch_size,), t, device=self.device)
+                        output = self.model(x, timesteps, lq = sources)
+                        coef_1 = self.scheduler.get_eta_t(t - 1) / self.scheduler.get_eta_t(t)
+                        coef_2 = self.scheduler.get_alpha_t(t) / self.scheduler.get_eta_t(t)
+                        coef_3 = self.scheduler.config.kappa * self.scheduler.get_eta_t(t - 1) / self.scheduler.get_eta_t(t) * self.scheduler.get_alpha_t(t)
+
+                        coef_1, coef_2, coef_3 = coef_1.to(self.device), coef_2.to(self.device), coef_3.to(self.device)
+
+                        x = coef_1 * x + coef_2 * output + coef_3 * torch.randn_like(x, device=self.device)
+
+                        intermediate_results.append(
+                            (x.detach().cpu().numpy(), output.detach().cpu().numpy())
+                        )
+                    n_steps = len(intermediate_results)
+                    fig, axes = plt.subplots(10, n_steps + 1, figsize=(20, 4*n_steps))
+                    
+                    for j in range(10):
+                        for i, (x, output) in enumerate(intermediate_results):
+                            x_img = x[0]  # Shape: (5, 512, 512)
+                            output_img = output[0]  # Shape: (5, 512, 512)
+                            target_img = targets[0].detach().cpu().numpy()[0]  # Shape: (5, 512, 512)
+                            
+                            if j < 5:
+                                axes[j, i].imshow(x_img[j], cmap='viridis')
+                                axes[j, i].set_title(f'Step {n_steps-i} X Channel {j+1}')
+                            else:
+                                axes[j, i].imshow(output_img[j-5], cmap='viridis')
+                                axes[j, i].set_title(f'Step {n_steps-i} Output Channel {j-4}')
+                            axes[j, i].axis('off')
+
+                    for j in range(5):
+                        # the target image  
+                        axes[j, n_steps].imshow(target_img[j], cmap='viridis')
+                        axes[j, n_steps].set_title(f'Target Channel {j+1}')
+                        axes[j, n_steps].axis('off')
+                    
+                    plt.tight_layout()
+                    
+                    # Log diffusion process to wandb
+                    wandb.log({
+                        'diffusion_process': wandb.Image(fig),
+                    }, step=self.state.global_step)
+
+
             
         return (loss, None, None)  # Only return loss for validation
 
@@ -374,9 +439,9 @@ def main():
         warmup_steps=config.warmup_steps,
         logging_steps=config.logging_steps,
         eval_strategy=config.evaluation_strategy,
-        # eval_steps=100,
+        eval_steps=100,
         save_strategy=config.save_strategy,
-        # save_steps=100,
+        save_steps=100,
         load_best_model_at_end=config.load_best_model_at_end,
         fp16=config.fp16,
         report_to=config.report_to,
@@ -393,6 +458,29 @@ def main():
             num_res_blocks=2, 
             attention_resolutions=(64,32,16,8), 
             cond_lq=False
+        )
+        model = UNetModelSwin(
+            image_size=512,
+            in_channels=5,
+            model_channels=160,
+            out_channels=5,
+            attention_resolutions=[64, 32, 16, 8],
+            dropout=0,
+            channel_mult=[1, 2, 2, 4],
+            num_res_blocks=[2, 2, 2, 2],
+            conv_resample=True,
+            dims=2,
+            use_fp16=False,
+            num_heads=1,  # Assuming default, since num_heads is not mentioned in the config
+            num_head_channels=32,
+            use_scale_shift_norm=True,
+            resblock_updown=False,
+            swin_depth=2,
+            swin_embed_dim=192,
+            window_size=8,
+            mlp_ratio=4,
+            cond_lq=True,
+            lq_size=512
         )
         print(f"using swin unet")
         scheduler = DiffusionScheduler(CFG(config.kappa, config.p, config.eta_T, config.T))
