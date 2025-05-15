@@ -197,7 +197,7 @@ class DiffusionTrainer(Trainer):
                             (x.detach().cpu().numpy(), output.detach().cpu().numpy())
                         )
                     n_steps = len(intermediate_results)
-                    fig, axes = plt.subplots(10, n_steps + 1, figsize=(4*n_steps, 20))
+                    fig, axes = plt.subplots(10, n_steps + 1, figsize=(2.2*n_steps, 20))
                     
                     for j in range(10):
                         for i, (x, output) in enumerate(intermediate_results):
@@ -211,17 +211,24 @@ class DiffusionTrainer(Trainer):
                                 axes[j, i].imshow(output_img[j-5], cmap='viridis')
                             axes[j, i].axis('off')
 
-                    for j in range(5):
+                    for j in range(10):
                         # the target image  
-                        axes[j, n_steps].imshow(target_img[j], cmap='viridis')
+
+                        axes[j, n_steps].imshow(target_img[j % 5], cmap='viridis')
                         axes[j, n_steps].axis('off')
                     
                     plt.tight_layout()
                     
-                    # Log diffusion process to wandb
+                    # Log diffusion process to wandb with explicit step
+                    current_step = self.state.global_step
                     wandb.log({
-                        'diffusion_process': wandb.Image(fig),
-                    }, step=self.state.global_step)
+                        'val/diffusion_process': wandb.Image(fig),
+                        'val/step': current_step,  # Add explicit step tracking
+                        'val/loss': loss.item()  # Add validation loss
+                    }, step=current_step)
+                    
+                    # Force wandb to sync
+                    wandb.log({}, commit=True)
 
 
             
