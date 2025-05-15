@@ -93,7 +93,7 @@ class DiffusionTrainer(Trainer):
         
         diff = outputs - targets
         squared_diff = diff.pow(2)
-        loss = (squared_diff).mean()
+        loss = (squared_diff * coefs).mean()
 
         if torch.isnan(loss):
             print(f"Warning: NaN loss detected at step {self.state.global_step}")
