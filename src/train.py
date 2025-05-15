@@ -184,15 +184,15 @@ class DiffusionTrainer(Trainer):
 
                     for t in range(self.scheduler.config.T, 0, -1):
                         # Create a batch of timesteps
-                        timesteps = torch.full((batch_size,), t, device=self.device)
+                        timesteps = torch.full((batch_size,), t, device=device)
                         output = self.model(x, timesteps, lq = sources)
                         coef_1 = self.scheduler.get_eta_t(t - 1) / self.scheduler.get_eta_t(t)
                         coef_2 = self.scheduler.get_alpha_t(t) / self.scheduler.get_eta_t(t)
                         coef_3 = self.scheduler.config.kappa * self.scheduler.get_eta_t(t - 1) / self.scheduler.get_eta_t(t) * self.scheduler.get_alpha_t(t)
 
-                        coef_1, coef_2, coef_3 = coef_1.to(self.device), coef_2.to(self.device), coef_3.to(self.device)
+                        coef_1, coef_2, coef_3 = coef_1.to(device), coef_2.to(device), coef_3.to(device)
 
-                        x = coef_1 * x + coef_2 * output + coef_3 * torch.randn_like(x, device=self.device)
+                        x = coef_1 * x + coef_2 * output + coef_3 * torch.randn_like(x, device=device)
 
                         intermediate_results.append(
                             (x.detach().cpu().numpy(), output.detach().cpu().numpy())
