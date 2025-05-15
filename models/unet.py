@@ -687,7 +687,7 @@ class UNetModelSwin(nn.Module):
             nn.SiLU(),
             linear(time_embed_dim, time_embed_dim),
         )
-        print(f"cond_lq: {cond_lq}, lq_size: {lq_size}, image_size: {image_size}, {cond_lq} {lq_size == image_size}")
+        # print(f"cond_lq: {cond_lq}, lq_size: {lq_size}, image_size: {image_size}, {cond_lq} {lq_size == image_size}")
         if cond_lq and lq_size == image_size:
             self.feature_extractor = nn.Identity()
             base_chn = self.in_channels + 1 if cond_mask else self.in_channels
@@ -705,7 +705,7 @@ class UNetModelSwin(nn.Module):
 
         ch = input_ch = int(channel_mult[0] * model_channels)
         in_channels += base_chn
-        print(f"in_channels: {in_channels}, base_chn: {base_chn}, dims: {dims}, in_channels: {in_channels}, ch: {ch}")
+        # print(f"in_channels: {in_channels}, base_chn: {base_chn}, dims: {dims}, in_channels: {in_channels}, ch: {ch}")
         self.input_blocks = nn.ModuleList(
             [TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1))]
         )
