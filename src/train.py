@@ -204,7 +204,7 @@ class DiffusionTrainer(Trainer):
                         for i, (x, output) in enumerate(intermediate_results):
                             x_img = x[0]  # Shape: (5, 512, 512)
                             output_img = output[0]  # Shape: (5, 512, 512)
-                            target_img = targets[0].detach().cpu().numpy()[0]  # Shape: (5, 512, 512)
+                            target_img = targets[0].detach().cpu().numpy() # Shape: (5, 512, 512)
                             
                             if j < 5:
                                 axes[j, i].imshow(x_img[j], cmap='viridis')

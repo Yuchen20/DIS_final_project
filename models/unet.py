@@ -883,7 +883,7 @@ class UNetModelSwin(nn.Module):
                 lq = th.cat([lq, mask], dim=1)
             lq = self.feature_extractor(lq.type(self.dtype))
             x = th.cat([x, lq], dim=1)
-            print(f"x.shape: {x.shape}, lq.shape: {lq.shape}")
+            # print(f"x.shape: {x.shape}, lq.shape: {lq.shape}")
 
 
         h = x.type(self.dtype)
