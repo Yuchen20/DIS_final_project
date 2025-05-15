@@ -687,10 +687,10 @@ class UNetModelSwin(nn.Module):
             nn.SiLU(),
             linear(time_embed_dim, time_embed_dim),
         )
-
+        print(f"cond_lq: {cond_lq}, lq_size: {lq_size}, image_size: {image_size}, {cond_lq} {lq_size == image_size}")
         if cond_lq and lq_size == image_size:
             self.feature_extractor = nn.Identity()
-            base_chn = 4 if cond_mask else 3
+            base_chn = self.image_size + 1 if cond_mask else self.image_size
         else:
             feature_extractor = []
             feature_chn = 4 if cond_mask else 3
