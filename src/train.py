@@ -172,7 +172,6 @@ class DiffusionTrainer(Trainer):
                 self._eval_batch_counter += 1
             else:
                 intermediate_results = []
-                self._eval_batch_counter = 0
                 with torch.no_grad():
                     # only take the first image in the batch
                     sources = sources[0].to(device).unsqueeze(0)
@@ -198,7 +197,7 @@ class DiffusionTrainer(Trainer):
                             (x.detach().cpu().numpy(), output.detach().cpu().numpy())
                         )
                     n_steps = len(intermediate_results)
-                    fig, axes = plt.subplots(10, n_steps + 1, figsize=(20, 4*n_steps))
+                    fig, axes = plt.subplots(10, n_steps + 1, figsize=(4*n_steps, 20))
                     
                     for j in range(10):
                         for i, (x, output) in enumerate(intermediate_results):
@@ -208,16 +207,13 @@ class DiffusionTrainer(Trainer):
                             
                             if j < 5:
                                 axes[j, i].imshow(x_img[j], cmap='viridis')
-                                axes[j, i].set_title(f'Step {n_steps-i} X Channel {j+1}')
                             else:
                                 axes[j, i].imshow(output_img[j-5], cmap='viridis')
-                                axes[j, i].set_title(f'Step {n_steps-i} Output Channel {j-4}')
                             axes[j, i].axis('off')
 
                     for j in range(5):
                         # the target image  
                         axes[j, n_steps].imshow(target_img[j], cmap='viridis')
-                        axes[j, n_steps].set_title(f'Target Channel {j+1}')
                         axes[j, n_steps].axis('off')
                     
                     plt.tight_layout()
