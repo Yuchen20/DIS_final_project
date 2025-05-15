@@ -705,6 +705,7 @@ class UNetModelSwin(nn.Module):
 
         ch = input_ch = int(channel_mult[0] * model_channels)
         in_channels += base_chn
+        print(f"in_channels: {in_channels}, base_chn: {base_chn}, dims: {dims}, in_channels: {in_channels}, ch: {ch}")
         self.input_blocks = nn.ModuleList(
             [TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1))]
         )
@@ -882,6 +883,7 @@ class UNetModelSwin(nn.Module):
                 lq = th.cat([lq, mask], dim=1)
             lq = self.feature_extractor(lq.type(self.dtype))
             x = th.cat([x, lq], dim=1)
+            print(f"x.shape: {x.shape}, lq.shape: {lq.shape}")
 
 
         h = x.type(self.dtype)
