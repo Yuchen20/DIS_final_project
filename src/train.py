@@ -168,16 +168,15 @@ class DiffusionTrainer(Trainer):
             loss = ((outputs - targets).pow(2)).mean()
 
             # for every 100 validation steps do full diffusion
-            if self._eval_batch_counter % 100 != 1:
-                self._eval_batch_counter += 1
-            else:
+            self._eval_batch_counter += 1
+            if self._eval_batch_counter % 100 == 1:
                 intermediate_results = []
                 with torch.no_grad():
                     # only take the first image in the batch
                     sources = sources[0].to(device).unsqueeze(0)
                     targets = targets[0].to(device).unsqueeze(0)
 
-                    x = self.scheduler.get_noisy_image(self.scheduler.config.T, targets, sources)
+                    x = self.scheduler.get_noisy_image(self.scheduler.config.T, sources, sources)
                     x = x.to(device)
                     batch_size = x.shape[0]
 
