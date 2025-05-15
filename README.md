@@ -62,3 +62,9 @@ segmentation, cell segmentation -->
 - Mito (ch01), AGP (ch02), DNA (ch05)
 - RNA (ch04), ER (ch03), DNA (ch05)
 - DNA (ch05), nuclei segmentation, cell segmentation
+
+
+
+# kill accelerate 
+<!-- fuser -v /dev/nvidia* -->
+<!-- kill -9 <pid> -->

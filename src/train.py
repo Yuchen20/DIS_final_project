@@ -218,16 +218,12 @@ class DiffusionTrainer(Trainer):
                     
                     plt.tight_layout()
                     
-                    # Log diffusion process to wandb with explicit step
-                    current_step = self.state.global_step
+                    # Log diffusion process to wandb with custom step
+                    val_step = self._eval_batch_counter
                     wandb.log({
                         'val/diffusion_process': wandb.Image(fig),
-                        'val/step': current_step,  # Add explicit step tracking
-                        'val/loss': loss.item()  # Add validation loss
-                    }, step=current_step)
-                    
-                    # Force wandb to sync
-                    wandb.log({}, commit=True)
+                        'val_step': val_step,
+                    })
 
 
             
@@ -400,6 +396,10 @@ def main():
         config=asdict(config),
         dir='/home/ym429/rds/hpc-work/dissertation/results/wandb'  # Set wandb directory
     )
+    
+    # Define custom metrics for wandb
+    wandb.define_metric("val_step")
+    wandb.define_metric("val/diffusion_process", step_metric="val_step")
 
     # Data loading setup (from data_processing.ipynb guide)
     source_channels = [7, 7, 7, 7, 7]
