@@ -191,6 +191,7 @@ class SwinUNetPredictor(BasePredictor):
         # Initialize x with noisy image
         t = config.T
         x = scheduler.get_noisy_image(t, sources, sources)
+        sources = sources.to(self.device)
         
         # Store intermediate results for logging
         intermediate_results = []
