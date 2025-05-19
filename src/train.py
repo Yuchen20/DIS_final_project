@@ -452,15 +452,7 @@ def main():
     )
 
     if config.use_diffusion:
-        model = UNetModelSwin(
-            image_size=512, 
-            in_channels=5, 
-            model_channels=160, 
-            out_channels=5, 
-            num_res_blocks=2, 
-            attention_resolutions=(64,32,16,8), 
-            cond_lq=False
-        )
+
         model = UNetModelSwin(
             image_size=512,
             in_channels=5,

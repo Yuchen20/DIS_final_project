@@ -157,13 +157,27 @@ class SwinUNetPredictor(BasePredictor):
     """Predictor for Swin UNet model with diffusion process"""
     def load_model(self, model_path):
         model = UNetModelSwin(
-            image_size=512, 
-            in_channels=5, 
-            model_channels=160, 
-            out_channels=5, 
-            num_res_blocks=2, 
-            attention_resolutions=(64,32,16,8), 
-            cond_lq=False
+            image_size=512,
+            in_channels=5,
+            model_channels=160,
+            out_channels=5,
+            attention_resolutions=[64, 32, 16, 8],
+            dropout=0,
+            channel_mult=[1, 2, 2, 4],
+            num_res_blocks=[2, 2, 2, 2],
+            conv_resample=True,
+            dims=2,
+            use_fp16=False,
+            num_heads=1,  # Assuming default, since num_heads is not mentioned in the config
+            num_head_channels=32,
+            use_scale_shift_norm=True,
+            resblock_updown=False,
+            swin_depth=2,
+            swin_embed_dim=192,
+            window_size=8,
+            mlp_ratio=4,
+            cond_lq=True,
+            lq_size=512
         )
         checkpoint = self._load_hf_checkpoint(model_path)
         model.load_state_dict(checkpoint)
@@ -187,7 +201,7 @@ class SwinUNetPredictor(BasePredictor):
             for t in range(config.T, 0, -1):
                 # Create a batch of timesteps
                 timesteps = torch.full((batch_size,), t, device=self.device)
-                output = self.model(x, timesteps)
+                output = self.model(x, timesteps, lq = sources)
                 coef_1 = scheduler.get_eta_t(t - 1) / scheduler.get_eta_t(t)
                 coef_2 = scheduler.get_alpha_t(t) / scheduler.get_eta_t(t)
                 coef_3 = config.kappa * scheduler.get_eta_t(t - 1) / scheduler.get_eta_t(t) * scheduler.get_alpha_t(t)
@@ -210,21 +224,31 @@ class SwinUNetPredictor(BasePredictor):
         if step % 10 == 0 and hasattr(self, 'intermediate_results'):
             # Create figure for diffusion process
             n_steps = len(self.intermediate_results)
-            fig, axes = plt.subplots(n_steps, 10, figsize=(20, 4*n_steps))
+            fig, axes = plt.subplots(10, n_steps + 2, figsize=(2.2*(n_steps + 1), 20))
             
-            for i, (x, output) in enumerate(self.intermediate_results):
-                # Get first image from batch
-                x_img = x[0]  # Shape: (5, 512, 512)
-                output_img = output[0]  # Shape: (5, 512, 512)
-                
-                for j in range(10):
+            # Plot source images first
+            source_img = sources[0].detach().cpu().numpy()  # Shape: (5, 512, 512)
+            for j in range(10):
+                axes[j, 0].imshow(source_img[j % 5], cmap='viridis')
+                axes[j, 0].axis('off')
+            
+            # Plot intermediate results
+            for j in range(10):
+                for i, (x, output) in enumerate(self.intermediate_results):
+                    x_img = x[0]  # Shape: (5, 512, 512)
+                    output_img = output[0]  # Shape: (5, 512, 512)
+                    target_img = targets[0].detach().cpu().numpy() # Shape: (5, 512, 512)
+                    
                     if j < 5:
-                        axes[i, j].imshow(x_img[j], cmap='viridis')
-                        axes[i, j].set_title(f'Step {n_steps-i} X Channel {j+1}')
+                        axes[j, i+1].imshow(x_img[j], cmap='viridis')
                     else:
-                        axes[i, j].imshow(output_img[j-5], cmap='viridis')
-                        axes[i, j].set_title(f'Step {n_steps-i} Output Channel {j-4}')
-                    axes[i, j].axis('off')
+                        axes[j, i+1].imshow(output_img[j-5], cmap='viridis')
+                    axes[j, i+1].axis('off')
+
+            # Plot target images last
+            for j in range(10):
+                axes[j, n_steps+1].imshow(target_img[j % 5], cmap='viridis')
+                axes[j, n_steps+1].axis('off')
             
             plt.tight_layout()
             
@@ -418,7 +442,7 @@ if __name__ == '__main__':
 # accelerate run src/inference.py --model_path /home/ym429/rds/hpc-work/dissertation/results/Unet/model.safetensors --model_type unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/unet
 
 ## For Swin UNet:
-# python inference.py --model_path /home/ym429/rds/hpc-work/dissertation/models/swin_unet_checkpoint.pth --model_type swin_unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/swin_unet
+# python inference.py --model_path /home/ym429/rds/hpc-work/dissertation/results/rescell/checkpoint-69120 --model_type swin_unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/rescell
 
 ## For Pix2Pix:
 # python inference.py --model_path /path/to/pix2pix_checkpoint.pth --model_type pix2pix --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/pix2pix
