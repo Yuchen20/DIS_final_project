@@ -14,6 +14,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../mode
 from plain_unet import UNet
 from unet import UNetModelSwin
 from pix2pix import Pix2PixModel
+import lpips
 
 
 # 1. Configuration
@@ -31,7 +32,7 @@ class TrainConfig:
     evaluation_strategy: str = 'epoch'
     save_strategy: str = 'epoch'
     load_best_model_at_end: bool = True
-    fp16: bool = False
+    fp16: bool = True
     report_to: str = 'wandb'
     output_dir: str = 'results'
     # diffusion params
@@ -64,6 +65,11 @@ class DiffusionTrainer(Trainer):
     def __init__(self, scheduler: DiffusionScheduler, *args, **kwargs):
         self.scheduler = scheduler
         self._eval_batch_counter = 0
+        # Initialize LPIPS loss (VGG backbone, on cuda:0 by default)
+        self.lpips_loss = lpips.LPIPS(net='vgg').to('cuda:0')
+        for params in self.lpips_loss.parameters():
+            params.requires_grad_(False)
+        self.lpips_loss.eval()
         super().__init__(*args, **kwargs)
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
@@ -90,10 +96,26 @@ class DiffusionTrainer(Trainer):
         # forward pass
         outputs = model(noisy, ts, lq = sources.to(device))
 
-        
         diff = outputs - targets
         squared_diff = diff.pow(2)
-        loss = (squared_diff * coefs).mean()
+        mse_loss = squared_diff.mean()
+
+        # LPIPS expects shape (N,3,H,W) or (N,1,H,W), so flatten channel dim to batch for 5ch
+        # We'll compute mean LPIPS over all channels
+        lpips_total = 0.0
+        for b in range(batch_size):
+            lpips_sum = 0.0
+            for c in range(outputs.shape[1]):
+                # LPIPS expects 3-channel or 1-channel, so unsqueeze channel
+                out_img = outputs[b, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)  # (1,3,H,W)
+                tgt_img = targets[b, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
+                lpips_val = self.lpips_loss(out_img.to(device), tgt_img.to(device))
+                lpips_sum += lpips_val
+            lpips_total += lpips_sum / outputs.shape[1]
+        lpips_loss = lpips_total / batch_size
+
+        # Combine MSE and LPIPS (equal weighting)
+        loss = mse_loss + lpips_loss
 
         if torch.isnan(loss):
             print(f"Warning: NaN loss detected at step {self.state.global_step}")
@@ -449,15 +471,16 @@ def main():
         report_to=config.report_to,
         dataloader_num_workers=num_workers,
         max_grad_norm=1.0,
+        save_total_limit=2,
     )
 
     if config.use_diffusion:
 
         model = UNetModelSwin(
             image_size=512,
-            in_channels=5,
+            in_channels=len(source_channels),
             model_channels=160,
-            out_channels=5,
+            out_channels=len(target_channels),
             attention_resolutions=[64, 32, 16, 8],
             dropout=0,
             channel_mult=[1, 2, 2, 4],
@@ -524,3 +547,6 @@ if __name__ == '__main__':
     main()
 
 # accelerate launch src/train.py  --output_dir /home/ym429/rds/hpc-work/dissertation/results/
+
+
+
