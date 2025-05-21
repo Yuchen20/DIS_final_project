@@ -209,7 +209,7 @@ class SwinUNetPredictor(BasePredictor):
 
                 coef_1, coef_2, coef_3 = coef_1.to(self.device), coef_2.to(self.device), coef_3.to(self.device)
 
-                x = coef_1 * x + coef_2 * output + coef_3 * torch.randn_like(x, device=self.device)
+                x = coef_1 * x + coef_2 * output# + coef_3 * torch.randn_like(x, device=self.device)
                 intermediate_results.append(
                     (x.detach().cpu().numpy(), output.detach().cpu().numpy())
                 )
@@ -306,11 +306,14 @@ def calculate_metrics(pred, target):
     metrics = {
         'mse': [],
         'ssim': [],
-        'psnr': []
+        'psnr': [],
+        'mse_255': [],
+        'ssim_255': [],
+        'psnr_255': []
     }
     
     for i in range(pred.shape[0]):  # For each channel
-        pred_channel = pred[i]
+        pred_channel = pred[i] 
         target_channel = target[i]
         
         # MSE
@@ -327,6 +330,19 @@ def calculate_metrics(pred, target):
         metrics['mse'].append(mse)
         metrics['ssim'].append(ssim_val)
         metrics['psnr'].append(psnr_val)
+
+        # normalize the target and pred to 0-255
+        pred_norm_255 = (pred_channel - pred_channel.min()) / (pred_channel.max() - pred_channel.min()) * 255
+        target_norm_255 = (target_channel - target_channel.min()) / (target_channel.max() - target_channel.min()) * 255
+        
+        mse_255 = np.mean((pred_norm_255 - target_norm_255) ** 2)
+        ssim_255 = ssim(pred_norm_255, target_norm_255, data_range=255)
+        psnr_255 = psnr(target_norm_255, pred_norm_255, data_range=255)
+
+        metrics['mse_255'].append(mse_255)
+        metrics['ssim_255'].append(ssim_255)
+        metrics['psnr_255'].append(psnr_255)
+
     
     return metrics
 
@@ -337,7 +353,7 @@ def save_metrics_to_csv(metrics, filename, prefix, channel_idx):
     with open(filename, 'a', newline='') as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(['timestamp', 'image_name', 'channel', 'mse', 'ssim', 'psnr'])
+            writer.writerow(['timestamp', 'image_name', 'channel', 'mse', 'ssim', 'psnr', 'mse_255', 'ssim_255', 'psnr_255'])
         
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         writer.writerow([
@@ -346,7 +362,10 @@ def save_metrics_to_csv(metrics, filename, prefix, channel_idx):
             channel_idx,
             metrics['mse'][channel_idx],
             metrics['ssim'][channel_idx],
-            metrics['psnr'][channel_idx]
+            metrics['psnr'][channel_idx],
+            metrics['mse_255'][channel_idx],
+            metrics['ssim_255'][channel_idx],
+            metrics['psnr_255'][channel_idx]
         ])
 
 def save_predictions(pred, target, prefix, output_dir):
