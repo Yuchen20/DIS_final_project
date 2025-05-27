@@ -25,7 +25,7 @@ class TrainConfig:
     num_train_epochs: int = 10
     per_device_train_batch_size: int = 2
     per_device_eval_batch_size: int = 4
-    weight_decay: float = 0.005
+    weight_decay: float = 0
     lr_scheduler_type: str = 'cosine'
     warmup_steps: int = 5000
     logging_steps: int = 10
@@ -38,8 +38,8 @@ class TrainConfig:
     # diffusion params
     kappa: float = 2.0
     p: float = 0.3
-    eta_T: float = 0.999
-    T: int = 15
+    eta_T: float = 0.99
+    T: int = 4
     # training mode
     use_diffusion: bool = True
     use_pix2pix: bool = False
@@ -550,3 +550,5 @@ if __name__ == '__main__':
 
 
 
+
+## down arrow : ssim ()
