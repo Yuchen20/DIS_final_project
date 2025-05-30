@@ -315,17 +315,18 @@ def calculate_metrics(pred, target):
     for i in range(pred.shape[0]):  # For each channel
         pred_channel = pred[i] 
         target_channel = target[i]
-        
-        # MSE
-        mse = np.mean((pred_channel - target_channel) ** 2)
-        
-        # SSIM (convert to 0-1 range for SSIM calculation)
+
         pred_norm = (pred_channel - pred_channel.min()) / (pred_channel.max() - pred_channel.min())
         target_norm = (target_channel - target_channel.min()) / (target_channel.max() - target_channel.min())
+        
+        # MSE
+        mse = np.mean((pred_norm - target_norm) ** 2)
+        
+        # SSIM (convert to 0-1 range for SSIM calculation)
         ssim_val = ssim(pred_norm, target_norm, data_range=1.0)
         
         # PSNR
-        psnr_val = psnr(target_channel, pred_channel, data_range=target_channel.max() - target_channel.min())
+        psnr_val = psnr(target_norm, pred_norm, data_range=1.0)
         
         metrics['mse'].append(mse)
         metrics['ssim'].append(ssim_val)
@@ -459,7 +460,7 @@ if __name__ == '__main__':
 
 # To run the script:
 ## For UNet:
-# accelerate run src/inference.py --model_path /home/ym429/rds/hpc-work/dissertation/results/Unet/model.safetensors --model_type unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/unet
+# python inference.py --model_path /home/ym429/rds/hpc-work/dissertation/results/Unet/checkpoint-69120 --model_type unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/unet
 
 ## For Swin UNet:
 # python inference.py --model_path /home/ym429/rds/hpc-work/dissertation/results/rescell/checkpoint-69120 --model_type swin_unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/rescell
