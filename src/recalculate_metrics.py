@@ -5,6 +5,7 @@ import argparse
 import datetime
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import peak_signal_noise_ratio as psnr
+from tqdm import tqdm
 
 # --- Copy of the updated calculate_metrics function ---
 def calculate_metrics(pred, target):
@@ -71,7 +72,7 @@ def main():
         writer = csv.writer(f)
         writer.writerow(['timestamp', 'image_name', 'channel', 'mse', 'ssim', 'psnr', 'mse_255', 'ssim_255', 'psnr_255'])
 
-        for pred_file in pred_files:
+        for pred_file in tqdm(pred_files):
             prefix = pred_file[:-9]  # Remove '_pred.npy'
             target_file = prefix + '_target.npy'
             pred_path = os.path.join(folder, pred_file)
@@ -103,3 +104,4 @@ def main():
 if __name__ == '__main__':
     main() 
 
+# python src/recalculate_metrics.py --folder /rds/user/ym429/hpc-work/dissertation/inference_results/rescell_wlosscoef_bad_random/predictions --output /rds/user/ym429/hpc-work/dissertation/inference_results/rescell_wlosscoef_bad_random/new_metric.csv
