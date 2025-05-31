@@ -39,7 +39,7 @@ class TrainConfig:
     kappa: float = 2.0
     p: float = 0.3
     eta_T: float = 0.99
-    T: int = 4
+    T: int = 15
     # training mode
     use_diffusion: bool = True
     use_pix2pix: bool = False
