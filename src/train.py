@@ -34,15 +34,15 @@ class TrainConfig:
     load_best_model_at_end: bool = True
     fp16: bool = True
     report_to: str = 'wandb'
-    output_dir: str = 'results'
+    output_dir: str = 'results/pix2pix'
     # diffusion params
     kappa: float = 2.0
     p: float = 0.3
     eta_T: float = 0.99
     T: int = 15
     # training mode
-    use_diffusion: bool = True
-    use_pix2pix: bool = False
+    use_diffusion: bool = False
+    use_pix2pix: bool = True
 
 
 
@@ -328,6 +328,7 @@ class Pix2PixTrainer(Trainer):
             lr=self.args.learning_rate,
             betas=(0.5, 0.999)
         )
+        self._eval_batch_counter = 0  # Add a counter for prediction steps
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         sources = inputs['source']
@@ -350,38 +351,26 @@ class Pix2PixTrainer(Trainer):
         loss_G.backward()
         self.optimizer_G.step()
         
-        # Log images every 1000 steps
+        # Log images every 100 steps
         step = self.state.global_step
-        if step and step % 1000 == 0:
-            # Get first item in batch
+        if step and step % 100 == 0:
             source_img = sources[0].detach().cpu().numpy()
             fake_img = fake_targets[0].detach().cpu().numpy()
             target_img = targets[0].detach().cpu().numpy()
-            
-            # Create figure with 3 rows (source, fake, target) and 3 columns (channels)
-            fig, axes = plt.subplots(3, 3, figsize=(15, 15))
-            
-            # Plot source channels
-            for j in range(3):
+            fig, axes = plt.subplots(3, 5, figsize=(20, 12))
+            for j in range(5):
                 axes[0, j].imshow(source_img[j], cmap='viridis')
                 axes[0, j].set_title(f'Source Channel {j+1}')
                 axes[0, j].axis('off')
-            
-            # Plot fake channels
-            for j in range(3):
+            for j in range(5):
                 axes[1, j].imshow(fake_img[j], cmap='viridis')
                 axes[1, j].set_title(f'Fake Channel {j+1}')
                 axes[1, j].axis('off')
-            
-            # Plot target channels
-            for j in range(3):
+            for j in range(5):
                 axes[2, j].imshow(target_img[j], cmap='viridis')
                 axes[2, j].set_title(f'Target Channel {j+1}')
                 axes[2, j].axis('off')
-            
             plt.tight_layout()
-            
-            # Log to wandb
             wandb.log({
                 'pix2pix_comparison': wandb.Image(fig),
                 'loss_G': loss_G.item(),
@@ -391,32 +380,60 @@ class Pix2PixTrainer(Trainer):
                 'loss_D_real': loss_D_real.item(),
                 'loss_D_fake': loss_D_fake.item()
             }, step=step)
-            
             plt.close(fig)
         
         return (loss_G, fake_targets) if return_outputs else loss_G
 
     def prediction_step(self, model, inputs, *args, **kwargs):
-        """Override prediction step to handle dictionary inputs"""
+        """Override prediction step to handle dictionary inputs and log images every 100 steps"""
         sources = inputs['source']
         targets = inputs['target']
+        self._eval_batch_counter += 1
         
         with torch.no_grad():
             fake_targets = model(sources)
             loss_G, loss_G_GAN, loss_G_L1 = model.compute_generator_loss(sources, targets, fake_targets)
-            
+
+            # Log images every 100 steps
+            if self._eval_batch_counter % 100 == 0:
+                source_img = sources[0].detach().cpu().numpy()
+                fake_img = fake_targets[0].detach().cpu().numpy()
+                target_img = targets[0].detach().cpu().numpy()
+                fig, axes = plt.subplots(3, 5, figsize=(20, 12))
+                for j in range(5):
+                    axes[0, j].imshow(source_img[j], cmap='viridis')
+                    axes[0, j].set_title(f'Source Channel {j+1}')
+                    axes[0, j].axis('off')
+                for j in range(5):
+                    axes[1, j].imshow(fake_img[j], cmap='viridis')
+                    axes[1, j].set_title(f'Fake Channel {j+1}')
+                    axes[1, j].axis('off')
+                for j in range(5):
+                    axes[2, j].imshow(target_img[j], cmap='viridis')
+                    axes[2, j].set_title(f'Target Channel {j+1}')
+                    axes[2, j].axis('off')
+                plt.tight_layout()
+                wandb.log({
+                    'pix2pix_val_comparison': wandb.Image(fig),
+                    'val/loss_G': loss_G.item(),
+                    'val/loss_G_GAN': loss_G_GAN.item(),
+                    'val/loss_G_L1': loss_G_L1.item(),
+                }, step=self._eval_batch_counter)
+                plt.close(fig)
+        
         return (loss_G, None, None)  # Only return loss for validation
 
 # 5. Main training function
 def main():
     # config = TrainConfig()
-    config = TrainConfig(use_diffusion=True, output_dir='/home/ym429/rds/hpc-work/dissertation/results/')
+    
+    config = TrainConfig(output_dir='/rds/user/ym429/hpc-work/dissertation/results/pix2pix')
     set_seed(config.seed)
     # init WandB
     wandb.init(
         project='diffusion-denoise',
         config=asdict(config),
-        dir='/home/ym429/rds/hpc-work/dissertation/results/wandb'  # Set wandb directory
+        dir='/rds/user/ym429/hpc-work/dissertation/results/pix2pix/wandb'
     )
     
     # Define custom metrics for wandb
@@ -511,8 +528,8 @@ def main():
         )
     elif config.use_pix2pix:
         model = Pix2PixModel(
-            input_nc=3,  # 3 input channels
-            output_nc=3,  # 3 output channels
+            input_nc=5,  # 5 input channels
+            output_nc=5,  # 5 output channels
             ngf=64,
             ndf=64,
             norm='batch',
