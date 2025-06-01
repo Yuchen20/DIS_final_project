@@ -341,7 +341,20 @@ class Pix2PixTrainer(Trainer):
             weight_decay=1e-4  # Add small weight decay for regularization
         )
         self._eval_batch_counter = 0  # Add a counter for prediction steps
+        
+        # Disable the main optimizer since we handle our own
+        self.optimizer = None
 
+    def create_optimizer(self):
+        """Override to prevent creation of default optimizer"""
+        # We manage our own optimizers for GAN training
+        pass
+    
+    def optimizer_step(self, optimizer, model=None, inputs=None):
+        """Override to prevent default optimizer step since we handle our own"""
+        # Do nothing - we handle optimizer steps in training_step
+        pass
+    
     def training_step(self, model, inputs, num_items_in_batch=None):
         """Override training_step to handle GAN training properly"""
         model.train()
@@ -373,9 +386,9 @@ class Pix2PixTrainer(Trainer):
                 loss_D_real = torch.tensor(0.05, device=device)
                 loss_D_fake = torch.tensor(0.05, device=device)
             
-            # Clip gradients and backward pass
+            # Clip gradients and backward pass (no scaler for GAN training)
             loss_D = torch.clamp(loss_D, 0, 100)  # Prevent extreme loss values
-            self.accelerator.backward(loss_D)
+            loss_D.backward()
             torch.nn.utils.clip_grad_norm_(model.discriminator.parameters(), max_norm=1.0)
             self.optimizer_D.step()
             
@@ -402,9 +415,9 @@ class Pix2PixTrainer(Trainer):
                 loss_G_GAN = torch.tensor(0.5, device=device)
                 loss_G_L1 = torch.tensor(0.5, device=device)
             
-            # Clip gradients and backward pass
+            # Clip gradients and backward pass (no scaler for GAN training)
             loss_G = torch.clamp(loss_G, 0, 100)  # Prevent extreme loss values
-            self.accelerator.backward(loss_G)
+            loss_G.backward()
             torch.nn.utils.clip_grad_norm_(model.generator.parameters(), max_norm=1.0)
             self.optimizer_G.step()
             
@@ -976,6 +989,11 @@ def main(custom_config=None):
             use_dropout=True
         )
         print(f"using pix2pix")
+        
+        # Disable fp16 for GAN training as it can cause instability
+        training_args.fp16 = False
+        print("Disabled fp16 for Pix2Pix training (can cause instability)")
+        
         trainer = Pix2PixTrainer(
             model=model,
             args=training_args,
