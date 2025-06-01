@@ -926,6 +926,11 @@ def main(custom_config=None):
             data_collator=data_collator
         )
     elif config.use_pix2pix:
+        # Determine GPU IDs
+        gpu_ids = []
+        if torch.cuda.is_available():
+            gpu_ids = [i for i in range(torch.cuda.device_count())]
+        
         model = ImprovedPix2PixModel(
             input_nc=5,  # 5 input channels
             output_nc=5,  # 5 output channels
@@ -934,9 +939,11 @@ def main(custom_config=None):
             norm='batch',
             use_dropout=True,
             lambda_L1=100.0,
-            gan_mode='vanilla'
+            gan_mode='vanilla',
+            gpu_ids=gpu_ids
         )
         print(f"using improved pix2pix with UNet generator and PatchGAN discriminator")
+        print(f"GPU IDs: {gpu_ids}")
         
         # Disable fp16 for GAN training as it can cause instability
         training_args.fp16 = False

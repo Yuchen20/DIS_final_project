@@ -52,16 +52,19 @@ class ImprovedPix2PixModel(nn.Module):
         self.input_nc = input_nc
         self.output_nc = output_nc
         self.lambda_L1 = lambda_L1
-        self.device = torch.device('cuda' if torch.cuda.is_available() and len(gpu_ids) > 0 else 'cpu')
         self.gpu_ids = gpu_ids
         
-        # Initialize networks
+        # Initialize networks first
         self.netG = define_G(input_nc, output_nc, ngf, 'unet_256', norm, 
                             use_dropout, init_type, init_gain, gpu_ids)
         self.netD = define_D(input_nc + output_nc, ndf, 'basic', 3, norm, 
                             init_type, init_gain, gpu_ids)
         
-        # Initialize loss functions
+        # Detect device after networks are created
+        # The networks might be automatically placed on CUDA by define_G/define_D
+        self.device = next(self.netG.parameters()).device
+        
+        # Initialize loss functions and move to the correct device
         self.criterionGAN = GANLoss(gan_mode).to(self.device)
         self.criterionL1 = nn.L1Loss()
         
