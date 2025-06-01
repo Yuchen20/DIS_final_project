@@ -32,7 +32,7 @@ class TrainConfig:
     evaluation_strategy: str = 'epoch'
     save_strategy: str = 'epoch'
     load_best_model_at_end: bool = True
-    fp16: bool = True
+    fp16: bool = False
     report_to: str = 'wandb'
     output_dir: str = 'results/pix2pix'
     # diffusion params
@@ -322,62 +322,32 @@ class NormalTrainer(Trainer):
 class Pix2PixTrainer(Trainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Initialize optimizers for generator and discriminator with more conservative learning rates
-        # GANs are sensitive to learning rates, so we use smaller values than the main learning rate
-        gan_lr = min(self.args.learning_rate * 0.5, 2e-4)  # Cap at 2e-4 and use half of main LR
+        self._eval_batch_counter = 0
         
-        self.optimizer_G = torch.optim.Adam(
+    def create_optimizer(self):
+        """Create optimizer for the generator (main model)"""
+        # Create optimizer for generator only - we'll handle discriminator separately
+        gan_lr = min(self.args.learning_rate * 0.5, 2e-4)
+        
+        self.optimizer = torch.optim.Adam(
             self.model.generator.parameters(),
             lr=gan_lr,
             betas=(0.5, 0.999),
-            eps=1e-8,  # Add epsilon for numerical stability
-            weight_decay=1e-4  # Add small weight decay for regularization
+            eps=1e-8,
+            weight_decay=1e-4
         )
+        
+        # Create discriminator optimizer separately
         self.optimizer_D = torch.optim.Adam(
             self.model.discriminator.parameters(),
             lr=gan_lr,
             betas=(0.5, 0.999),
-            eps=1e-8,  # Add epsilon for numerical stability
-            weight_decay=1e-4  # Add small weight decay for regularization
+            eps=1e-8,
+            weight_decay=1e-4
         )
-        self._eval_batch_counter = 0  # Add a counter for prediction steps
-        
-        # Disable the main optimizer since we handle our own
-        self.optimizer = None
 
-    def create_optimizer(self):
-        """Override to prevent creation of default optimizer"""
-        # We manage our own optimizers for GAN training
-        pass
-    
-    def create_scheduler(self, num_training_steps: int, optimizer=None):
-        """Override to prevent creation of default scheduler"""
-        # We don't use learning rate scheduling for GAN training
-        # Set to None to prevent errors
-        self.lr_scheduler = None
-    
-    def create_optimizer_and_scheduler(self, num_training_steps: int):
-        """Override to completely bypass default optimizer and scheduler creation"""
-        # For GAN training, we handle our own optimizers and don't use schedulers
-        self.optimizer = None
-        self.lr_scheduler = None
-        print("Skipped default optimizer and scheduler creation for GAN training")
-    
-    def get_train_dataloader(self):
-        """Override to ensure proper dataloader handling"""
-        return super().get_train_dataloader()
-    
-    def floating_point_ops(self, inputs):
-        """Override to prevent FLOP calculation issues with GAN training"""
-        return 0
-    
-    def optimizer_step(self, optimizer, model=None, inputs=None):
-        """Override to prevent default optimizer step since we handle our own"""
-        # Do nothing - we handle optimizer steps in training_step
-        pass
-    
     def training_step(self, model, inputs, num_items_in_batch=None):
-        """Override training_step to handle GAN training properly"""
+        """Override training_step to handle GAN training with accelerator"""
         model.train()
         sources = inputs['source']
         targets = inputs['target']
@@ -387,29 +357,31 @@ class Pix2PixTrainer(Trainer):
         sources = torch.clamp(sources, -10, 10)
         targets = torch.clamp(targets, -10, 10)
         
-        # Generate fake images once and reuse
+        # Generate fake images
         fake_targets = model(sources)
-        
-        # Clamp fake targets to prevent extreme values
         fake_targets = torch.clamp(fake_targets, -10, 10)
         
-        # Update discriminator
+        # ========================
+        # Update Discriminator
+        # ========================
         self.optimizer_D.zero_grad()
         
-        # Compute discriminator loss
         try:
-            loss_D, loss_D_real, loss_D_fake = model.compute_discriminator_loss(sources, targets, fake_targets.detach())
+            loss_D, loss_D_real, loss_D_fake = model.compute_discriminator_loss(
+                sources, targets, fake_targets.detach()
+            )
             
-            # Check for NaN/Inf in discriminator loss
+            # Check for NaN/Inf
             if torch.isnan(loss_D) or torch.isinf(loss_D):
-                print(f"Warning: NaN/Inf detected in discriminator loss: {loss_D}")
+                print(f"Warning: NaN/Inf in discriminator loss: {loss_D}")
                 loss_D = torch.tensor(0.1, device=device, requires_grad=True)
                 loss_D_real = torch.tensor(0.05, device=device)
                 loss_D_fake = torch.tensor(0.05, device=device)
             
-            # Clip gradients and backward pass (no scaler for GAN training)
-            loss_D = torch.clamp(loss_D, 0, 100)  # Prevent extreme loss values
-            loss_D.backward()
+            loss_D = torch.clamp(loss_D, 0, 100)
+            
+            # Use accelerator for discriminator backward pass
+            self.accelerator.backward(loss_D)
             torch.nn.utils.clip_grad_norm_(model.discriminator.parameters(), max_norm=1.0)
             self.optimizer_D.step()
             
@@ -419,28 +391,26 @@ class Pix2PixTrainer(Trainer):
             loss_D_real = torch.tensor(0.05, device=device)
             loss_D_fake = torch.tensor(0.05, device=device)
         
-        # Update generator
-        self.optimizer_G.zero_grad()
-        
-        # Re-generate fake targets to get gradients for generator
+        # ========================
+        # Update Generator (this will be handled by Trainer's optimizer step)
+        # ========================
+        # Re-generate for generator gradients
         fake_targets_for_gen = model(sources)
         fake_targets_for_gen = torch.clamp(fake_targets_for_gen, -10, 10)
         
         try:
-            loss_G, loss_G_GAN, loss_G_L1 = model.compute_generator_loss(sources, targets, fake_targets_for_gen)
+            loss_G, loss_G_GAN, loss_G_L1 = model.compute_generator_loss(
+                sources, targets, fake_targets_for_gen
+            )
             
-            # Check for NaN/Inf in generator loss
+            # Check for NaN/Inf
             if torch.isnan(loss_G) or torch.isinf(loss_G):
-                print(f"Warning: NaN/Inf detected in generator loss: {loss_G}")
+                print(f"Warning: NaN/Inf in generator loss: {loss_G}")
                 loss_G = torch.tensor(1.0, device=device, requires_grad=True)
                 loss_G_GAN = torch.tensor(0.5, device=device)
                 loss_G_L1 = torch.tensor(0.5, device=device)
             
-            # Clip gradients and backward pass (no scaler for GAN training)
-            loss_G = torch.clamp(loss_G, 0, 100)  # Prevent extreme loss values
-            loss_G.backward()
-            torch.nn.utils.clip_grad_norm_(model.generator.parameters(), max_norm=1.0)
-            self.optimizer_G.step()
+            loss_G = torch.clamp(loss_G, 0, 100)
             
         except RuntimeError as e:
             print(f"Error in generator step: {e}")
@@ -452,17 +422,16 @@ class Pix2PixTrainer(Trainer):
         step = self.state.global_step
         if step and step % 100 == 0:
             with torch.no_grad():
-                # Ensure we have valid images for logging
                 source_img = sources[0].detach().cpu().numpy()
                 fake_img = fake_targets[0].detach().cpu().numpy()
                 target_img = targets[0].detach().cpu().numpy()
                 
-                # Check for NaN/Inf in images before plotting
+                # Check for NaN/Inf in images
                 if np.any(np.isnan(fake_img)) or np.any(np.isinf(fake_img)):
-                    print("Warning: NaN/Inf detected in fake images, skipping visualization")
-                    fake_img = np.zeros_like(target_img)  # Use zeros as fallback
+                    print("Warning: NaN/Inf detected in fake images")
+                    fake_img = np.zeros_like(target_img)
                 
-                # Normalize images for better visualization
+                # Normalize images for display
                 def normalize_for_display(img):
                     img_norm = (img - img.min()) / (img.max() - img.min() + 1e-8)
                     return np.clip(img_norm, 0, 1)
@@ -486,7 +455,6 @@ class Pix2PixTrainer(Trainer):
                     axes[2, j].axis('off')
                 plt.tight_layout()
                 
-                # Log losses with safety checks
                 wandb.log({
                     'pix2pix_comparison': wandb.Image(fig),
                     'loss_G': float(loss_G.item()) if not torch.isnan(loss_G) else 0.0,
@@ -498,12 +466,11 @@ class Pix2PixTrainer(Trainer):
                 }, step=step)
                 plt.close(fig)
         
-        # Return the loss for logging (detached to prevent double backward)
-        return loss_G.detach()
+        # Return generator loss - this will be used by Trainer for generator optimization
+        return loss_G
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        """This method is not used when training_step is overridden"""
-        # This is only called during evaluation
+        """This method is called during evaluation"""
         sources = inputs['source']
         targets = inputs['target']
         
@@ -514,12 +481,11 @@ class Pix2PixTrainer(Trainer):
         return (loss_G, fake_targets) if return_outputs else loss_G
 
     def prediction_step(self, model, inputs, *args, **kwargs):
-        """Override prediction step to handle dictionary inputs and log images every 100 steps"""
+        """Override prediction step for evaluation"""
         sources = inputs['source']
         targets = inputs['target']
         self._eval_batch_counter += 1
         
-        # Clamp inputs to reasonable range
         sources = torch.clamp(sources, -10, 10)
         targets = torch.clamp(targets, -10, 10)
         
@@ -530,32 +496,28 @@ class Pix2PixTrainer(Trainer):
             try:
                 loss_G, loss_G_GAN, loss_G_L1 = model.compute_generator_loss(sources, targets, fake_targets)
                 
-                # Check for NaN/Inf in losses
                 if torch.isnan(loss_G) or torch.isinf(loss_G):
-                    print(f"Warning: NaN/Inf detected in validation loss: {loss_G}")
+                    print(f"Warning: NaN/Inf in validation loss: {loss_G}")
                     loss_G = torch.tensor(1.0, device=sources.device)
                     loss_G_GAN = torch.tensor(0.5, device=sources.device)
                     loss_G_L1 = torch.tensor(0.5, device=sources.device)
                     
             except RuntimeError as e:
-                print(f"Error in validation step: {e}")
+                print(f"Error in validation: {e}")
                 loss_G = torch.tensor(1.0, device=sources.device)
                 loss_G_GAN = torch.tensor(0.5, device=sources.device)
                 loss_G_L1 = torch.tensor(0.5, device=sources.device)
 
-            # Log images every 100 steps
+            # Log validation images every 100 steps
             if self._eval_batch_counter % 100 == 0:
-                # Ensure we have valid images for logging
                 source_img = sources[0].detach().cpu().numpy()
                 fake_img = fake_targets[0].detach().cpu().numpy()
                 target_img = targets[0].detach().cpu().numpy()
                 
-                # Check for NaN/Inf in images before plotting
                 if np.any(np.isnan(fake_img)) or np.any(np.isinf(fake_img)):
-                    print("Warning: NaN/Inf detected in validation fake images")
-                    fake_img = np.zeros_like(target_img)  # Use zeros as fallback
+                    print("Warning: NaN/Inf in validation fake images")
+                    fake_img = np.zeros_like(target_img)
                 
-                # Normalize images for better visualization
                 def normalize_for_display(img):
                     img_norm = (img - img.min()) / (img.max() - img.min() + 1e-8)
                     return np.clip(img_norm, 0, 1)
@@ -579,7 +541,6 @@ class Pix2PixTrainer(Trainer):
                     axes[2, j].axis('off')
                 plt.tight_layout()
                 
-                # Log losses with safety checks
                 wandb.log({
                     'pix2pix_val_comparison': wandb.Image(fig),
                     'val/loss_G': float(loss_G.item()) if not torch.isnan(loss_G) else 0.0,
@@ -588,7 +549,7 @@ class Pix2PixTrainer(Trainer):
                 }, step=self._eval_batch_counter)
                 plt.close(fig)
         
-        return (loss_G, None, None)  # Only return loss for validation
+        return (loss_G, None, None)
 
 class ConsistencyDistillationTrainer(Trainer):
     """Trainer for Consistency Distillation following Algorithm 2 from the paper"""
