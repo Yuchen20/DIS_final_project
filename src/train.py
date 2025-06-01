@@ -356,6 +356,21 @@ class Pix2PixTrainer(Trainer):
         # Set to None to prevent errors
         self.lr_scheduler = None
     
+    def create_optimizer_and_scheduler(self, num_training_steps: int):
+        """Override to completely bypass default optimizer and scheduler creation"""
+        # For GAN training, we handle our own optimizers and don't use schedulers
+        self.optimizer = None
+        self.lr_scheduler = None
+        print("Skipped default optimizer and scheduler creation for GAN training")
+    
+    def get_train_dataloader(self):
+        """Override to ensure proper dataloader handling"""
+        return super().get_train_dataloader()
+    
+    def floating_point_ops(self, inputs):
+        """Override to prevent FLOP calculation issues with GAN training"""
+        return 0
+    
     def optimizer_step(self, optimizer, model=None, inputs=None):
         """Override to prevent default optimizer step since we handle our own"""
         # Do nothing - we handle optimizer steps in training_step
