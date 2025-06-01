@@ -350,6 +350,12 @@ class Pix2PixTrainer(Trainer):
         # We manage our own optimizers for GAN training
         pass
     
+    def create_scheduler(self, num_training_steps: int, optimizer=None):
+        """Override to prevent creation of default scheduler"""
+        # We don't use learning rate scheduling for GAN training
+        # Set to None to prevent errors
+        self.lr_scheduler = None
+    
     def optimizer_step(self, optimizer, model=None, inputs=None):
         """Override to prevent default optimizer step since we handle our own"""
         # Do nothing - we handle optimizer steps in training_step
