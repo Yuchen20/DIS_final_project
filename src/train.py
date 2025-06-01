@@ -357,18 +357,19 @@ class Pix2PixTrainer(Trainer):
         sources = torch.clamp(sources, -10, 10)
         targets = torch.clamp(targets, -10, 10)
         
-        # Generate fake images
-        fake_targets = model(sources)
-        fake_targets = torch.clamp(fake_targets, -10, 10)
-        
         # ========================
         # Update Discriminator
         # ========================
         self.optimizer_D.zero_grad()
         
+        # Generate fake images for discriminator (detach immediately to save memory)
+        with torch.no_grad():
+            fake_targets_d = model(sources).detach().clone()
+            fake_targets_d = torch.clamp(fake_targets_d, -10, 10)
+        
         try:
             loss_D, loss_D_real, loss_D_fake = model.compute_discriminator_loss(
-                sources, targets, fake_targets.detach()
+                sources, targets, fake_targets_d
             )
             
             # Check for NaN/Inf
@@ -391,16 +392,20 @@ class Pix2PixTrainer(Trainer):
             loss_D_real = torch.tensor(0.05, device=device)
             loss_D_fake = torch.tensor(0.05, device=device)
         
+        # Clear discriminator variables to free memory
+        del fake_targets_d
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        
         # ========================
         # Update Generator (this will be handled by Trainer's optimizer step)
         # ========================
-        # Re-generate for generator gradients
-        fake_targets_for_gen = model(sources)
-        fake_targets_for_gen = torch.clamp(fake_targets_for_gen, -10, 10)
+        # Generate for generator gradients
+        fake_targets_g = model(sources)
+        fake_targets_g = torch.clamp(fake_targets_g, -10, 10)
         
         try:
             loss_G, loss_G_GAN, loss_G_L1 = model.compute_generator_loss(
-                sources, targets, fake_targets_for_gen
+                sources, targets, fake_targets_g
             )
             
             # Check for NaN/Inf
@@ -418,56 +423,76 @@ class Pix2PixTrainer(Trainer):
             loss_G_GAN = torch.tensor(0.5, device=device)
             loss_G_L1 = torch.tensor(0.5, device=device)
         
-        # Log images every 100 steps
+        # Log images every 100 steps with memory management
         step = self.state.global_step
-        if step and step % 100 == 0:
-            with torch.no_grad():
-                source_img = sources[0].detach().cpu().numpy()
-                fake_img = fake_targets[0].detach().cpu().numpy()
-                target_img = targets[0].detach().cpu().numpy()
-                
-                # Check for NaN/Inf in images
-                if np.any(np.isnan(fake_img)) or np.any(np.isinf(fake_img)):
-                    print("Warning: NaN/Inf detected in fake images")
-                    fake_img = np.zeros_like(target_img)
-                
-                # Normalize images for display
-                def normalize_for_display(img):
-                    img_norm = (img - img.min()) / (img.max() - img.min() + 1e-8)
-                    return np.clip(img_norm, 0, 1)
-                
-                source_img = normalize_for_display(source_img)
-                fake_img = normalize_for_display(fake_img)
-                target_img = normalize_for_display(target_img)
-                
-                fig, axes = plt.subplots(3, 5, figsize=(20, 12))
-                for j in range(5):
-                    axes[0, j].imshow(source_img[j], cmap='viridis', vmin=0, vmax=1)
-                    axes[0, j].set_title(f'Source Channel {j+1}')
-                    axes[0, j].axis('off')
-                for j in range(5):
-                    axes[1, j].imshow(fake_img[j], cmap='viridis', vmin=0, vmax=1)
-                    axes[1, j].set_title(f'Fake Channel {j+1}')
-                    axes[1, j].axis('off')
-                for j in range(5):
-                    axes[2, j].imshow(target_img[j], cmap='viridis', vmin=0, vmax=1)
-                    axes[2, j].set_title(f'Target Channel {j+1}')
-                    axes[2, j].axis('off')
-                plt.tight_layout()
-                
-                wandb.log({
-                    'pix2pix_comparison': wandb.Image(fig),
-                    'loss_G': float(loss_G.item()) if not torch.isnan(loss_G) else 0.0,
-                    'loss_G_GAN': float(loss_G_GAN.item()) if not torch.isnan(loss_G_GAN) else 0.0,
-                    'loss_G_L1': float(loss_G_L1.item()) if not torch.isnan(loss_G_L1) else 0.0,
-                    'loss_D': float(loss_D.item()) if not torch.isnan(loss_D) else 0.0,
-                    'loss_D_real': float(loss_D_real.item()) if not torch.isnan(loss_D_real) else 0.0,
-                    'loss_D_fake': float(loss_D_fake.item()) if not torch.isnan(loss_D_fake) else 0.0
-                }, step=step)
-                plt.close(fig)
+        if step and step % 100 == 0:  
+            self._log_images_with_cleanup(sources, fake_targets_g, targets, loss_G, loss_G_GAN, loss_G_L1, loss_D, loss_D_real, loss_D_fake, step)
+        
+        # Clean up generator variables
+        del fake_targets_g
         
         # Return generator loss - this will be used by Trainer for generator optimization
         return loss_G
+    
+    def _log_images_with_cleanup(self, sources, fake_targets, targets, loss_G, loss_G_GAN, loss_G_L1, loss_D, loss_D_real, loss_D_fake, step):
+        """Log images with proper memory cleanup"""
+        with torch.no_grad():
+            # Move to CPU immediately to free GPU memory
+            source_img = sources[0].detach().cpu().numpy()
+            fake_img = fake_targets[0].detach().cpu().numpy()
+            target_img = targets[0].detach().cpu().numpy()
+            
+            # Check for NaN/Inf in images
+            if np.any(np.isnan(fake_img)) or np.any(np.isinf(fake_img)):
+                print("Warning: NaN/Inf detected in fake images")
+                fake_img = np.zeros_like(target_img)
+            
+            # Normalize images for display
+            def normalize_for_display(img):
+                img_norm = (img - img.min()) / (img.max() - img.min() + 1e-8)
+                return np.clip(img_norm, 0, 1)
+            
+            source_img = normalize_for_display(source_img)
+            fake_img = normalize_for_display(fake_img)
+            target_img = normalize_for_display(target_img)
+            
+            # Create figure
+            fig, axes = plt.subplots(3, 5, figsize=(20, 12))
+            for j in range(5):
+                axes[0, j].imshow(source_img[j], cmap='viridis', vmin=0, vmax=1)
+                axes[0, j].set_title(f'Source Channel {j+1}')
+                axes[0, j].axis('off')
+            for j in range(5):
+                axes[1, j].imshow(fake_img[j], cmap='viridis', vmin=0, vmax=1)
+                axes[1, j].set_title(f'Fake Channel {j+1}')
+                axes[1, j].axis('off')
+            for j in range(5):
+                axes[2, j].imshow(target_img[j], cmap='viridis', vmin=0, vmax=1)
+                axes[2, j].set_title(f'Target Channel {j+1}')
+                axes[2, j].axis('off')
+            plt.tight_layout()
+            
+            # Log to wandb
+            wandb.log({
+                'pix2pix_comparison': wandb.Image(fig),
+                'loss_G': float(loss_G.item()) if not torch.isnan(loss_G) else 0.0,
+                'loss_G_GAN': float(loss_G_GAN.item()) if not torch.isnan(loss_G_GAN) else 0.0,
+                'loss_G_L1': float(loss_G_L1.item()) if not torch.isnan(loss_G_L1) else 0.0,
+                'loss_D': float(loss_D.item()) if not torch.isnan(loss_D) else 0.0,
+                'loss_D_real': float(loss_D_real.item()) if not torch.isnan(loss_D_real) else 0.0,
+                'loss_D_fake': float(loss_D_fake.item()) if not torch.isnan(loss_D_fake) else 0.0
+            }, step=step)
+            
+            # Important: Close figure to free memory
+            plt.close(fig)
+            
+            # Clear variables
+            del source_img, fake_img, target_img, fig
+            
+        # Force garbage collection
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """This method is called during evaluation"""
@@ -508,48 +533,66 @@ class Pix2PixTrainer(Trainer):
                 loss_G_GAN = torch.tensor(0.5, device=sources.device)
                 loss_G_L1 = torch.tensor(0.5, device=sources.device)
 
-            # Log validation images every 100 steps
-            if self._eval_batch_counter % 100 == 0:
-                source_img = sources[0].detach().cpu().numpy()
-                fake_img = fake_targets[0].detach().cpu().numpy()
-                target_img = targets[0].detach().cpu().numpy()
-                
-                if np.any(np.isnan(fake_img)) or np.any(np.isinf(fake_img)):
-                    print("Warning: NaN/Inf in validation fake images")
-                    fake_img = np.zeros_like(target_img)
-                
-                def normalize_for_display(img):
-                    img_norm = (img - img.min()) / (img.max() - img.min() + 1e-8)
-                    return np.clip(img_norm, 0, 1)
-                
-                source_img = normalize_for_display(source_img)
-                fake_img = normalize_for_display(fake_img)
-                target_img = normalize_for_display(target_img)
-                
-                fig, axes = plt.subplots(3, 5, figsize=(20, 12))
-                for j in range(5):
-                    axes[0, j].imshow(source_img[j], cmap='viridis', vmin=0, vmax=1)
-                    axes[0, j].set_title(f'Source Channel {j+1}')
-                    axes[0, j].axis('off')
-                for j in range(5):
-                    axes[1, j].imshow(fake_img[j], cmap='viridis', vmin=0, vmax=1)
-                    axes[1, j].set_title(f'Fake Channel {j+1}')
-                    axes[1, j].axis('off')
-                for j in range(5):
-                    axes[2, j].imshow(target_img[j], cmap='viridis', vmin=0, vmax=1)
-                    axes[2, j].set_title(f'Target Channel {j+1}')
-                    axes[2, j].axis('off')
-                plt.tight_layout()
-                
-                wandb.log({
-                    'pix2pix_val_comparison': wandb.Image(fig),
-                    'val/loss_G': float(loss_G.item()) if not torch.isnan(loss_G) else 0.0,
-                    'val/loss_G_GAN': float(loss_G_GAN.item()) if not torch.isnan(loss_G_GAN) else 0.0,
-                    'val/loss_G_L1': float(loss_G_L1.item()) if not torch.isnan(loss_G_L1) else 0.0,
-                }, step=self._eval_batch_counter)
-                plt.close(fig)
+            # Log validation images every 100 steps with memory cleanup
+            if self._eval_batch_counter % 100 == 0:  
+                self._log_validation_images_with_cleanup(sources, fake_targets, targets, loss_G, loss_G_GAN, loss_G_L1)
+            
+            # Clean up validation variables
+            del fake_targets
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
         
         return (loss_G, None, None)
+    
+    def _log_validation_images_with_cleanup(self, sources, fake_targets, targets, loss_G, loss_G_GAN, loss_G_L1):
+        """Log validation images with proper memory cleanup"""
+        with torch.no_grad():
+            # Move to CPU immediately to free GPU memory
+            source_img = sources[0].detach().cpu().numpy()
+            fake_img = fake_targets[0].detach().cpu().numpy()
+            target_img = targets[0].detach().cpu().numpy()
+            
+            if np.any(np.isnan(fake_img)) or np.any(np.isinf(fake_img)):
+                print("Warning: NaN/Inf in validation fake images")
+                fake_img = np.zeros_like(target_img)
+            
+            def normalize_for_display(img):
+                img_norm = (img - img.min()) / (img.max() - img.min() + 1e-8)
+                return np.clip(img_norm, 0, 1)
+            
+            source_img = normalize_for_display(source_img)
+            fake_img = normalize_for_display(fake_img)
+            target_img = normalize_for_display(target_img)
+            
+            fig, axes = plt.subplots(3, 5, figsize=(20, 12))
+            for j in range(5):
+                axes[0, j].imshow(source_img[j], cmap='viridis', vmin=0, vmax=1)
+                axes[0, j].set_title(f'Source Channel {j+1}')
+                axes[0, j].axis('off')
+            for j in range(5):
+                axes[1, j].imshow(fake_img[j], cmap='viridis', vmin=0, vmax=1)
+                axes[1, j].set_title(f'Fake Channel {j+1}')
+                axes[1, j].axis('off')
+            for j in range(5):
+                axes[2, j].imshow(target_img[j], cmap='viridis', vmin=0, vmax=1)
+                axes[2, j].set_title(f'Target Channel {j+1}')
+                axes[2, j].axis('off')
+            plt.tight_layout()
+            
+            wandb.log({
+                'pix2pix_val_comparison': wandb.Image(fig),
+                'val/loss_G': float(loss_G.item()) if not torch.isnan(loss_G) else 0.0,
+                'val/loss_G_GAN': float(loss_G_GAN.item()) if not torch.isnan(loss_G_GAN) else 0.0,
+                'val/loss_G_L1': float(loss_G_L1.item()) if not torch.isnan(loss_G_L1) else 0.0,
+            }, step=self._eval_batch_counter)
+            
+            # Important: Close figure and clear variables
+            plt.close(fig)
+            del source_img, fake_img, target_img, fig
+            
+        # Force garbage collection
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
 class ConsistencyDistillationTrainer(Trainer):
     """Trainer for Consistency Distillation following Algorithm 2 from the paper"""
