@@ -43,6 +43,11 @@ class TrainConfig:
     # training mode
     use_diffusion: bool = False
     use_pix2pix: bool = True
+    use_consistency_distillation: bool = False
+    # consistency distillation params
+    cd_ema_decay: float = 0.999  # μ in the paper
+    cd_pretrained_path: str = None  # Path to pretrained diffusion model
+    cd_lambda_weight: float = 1.0  # Weight function λ(t_n)
 
 
 
@@ -330,7 +335,7 @@ class Pix2PixTrainer(Trainer):
         )
         self._eval_batch_counter = 0  # Add a counter for prediction steps
 
-    def training_step(self, model, inputs):
+    def training_step(self, model, inputs, num_items_in_batch=None):
         """Override training_step to handle GAN training properly"""
         model.train()
         sources = inputs['source']
@@ -438,11 +443,264 @@ class Pix2PixTrainer(Trainer):
         
         return (loss_G, None, None)  # Only return loss for validation
 
+class ConsistencyDistillationTrainer(Trainer):
+    """Trainer for Consistency Distillation following Algorithm 2 from the paper"""
+    
+    def __init__(self, scheduler: DiffusionScheduler, ema_decay: float = 0.999, 
+                 lambda_weight: float = 1.0, *args, **kwargs):
+        self.scheduler = scheduler
+        self.ema_decay = ema_decay
+        self.lambda_weight = lambda_weight
+        self._eval_batch_counter = 0
+        
+        # Initialize LPIPS loss
+        self.lpips_loss = lpips.LPIPS(net='vgg').to('cuda:0')
+        for params in self.lpips_loss.parameters():
+            params.requires_grad_(False)
+        self.lpips_loss.eval()
+        
+        super().__init__(*args, **kwargs)
+        
+        # Create EMA model (θ^- in the paper)
+        self.ema_model = None
+        
+    def _init_ema_model(self):
+        """Initialize EMA model as a copy of the current model"""
+        if self.ema_model is None:
+            import copy
+            self.ema_model = copy.deepcopy(self.model)
+            self.ema_model.eval()
+            for param in self.ema_model.parameters():
+                param.requires_grad_(False)
+    
+    def _update_ema_model(self):
+        """Update EMA model parameters: θ^- ← stopgrad(μθ^- + (1-μ)θ)"""
+        with torch.no_grad():
+            for ema_param, param in zip(self.ema_model.parameters(), self.model.parameters()):
+                ema_param.data.mul_(self.ema_decay).add_(param.data, alpha=1 - self.ema_decay)
+    
+    def _ode_solver_step(self, x_tn_plus_1, t_n_plus_1, t_n, sources):
+        """
+        Compute x^φ_{t_n} using the proper diffusion step (same as inference)
+        This uses the same step as in SwinUNetPredictor.predict():
+        x = coef_1 * x + coef_2 * output
+        """
+        device = x_tn_plus_1.device
+        batch_size = x_tn_plus_1.shape[0]
+        
+        # Create timestep tensors
+        t_n_plus_1_tensor = torch.full((batch_size,), t_n_plus_1, device=device)
+        
+        # Get model prediction at t_{n+1}
+        with torch.no_grad():
+            phi_output = self.model(x_tn_plus_1, t_n_plus_1_tensor, lq=sources)
+        
+        # Calculate coefficients for the diffusion step (same as inference.py)
+        # Going from t_{n+1} to t_n (one step back in diffusion process)
+        coef_1 = self.scheduler.get_eta_t(t_n) / self.scheduler.get_eta_t(t_n_plus_1)
+        coef_2 = self.scheduler.get_alpha_t(t_n_plus_1) / self.scheduler.get_eta_t(t_n_plus_1)
+        
+        # Ensure coefficients are on the right device
+        coef_1, coef_2 = coef_1.to(device), coef_2.to(device)
+        
+        # Apply the diffusion step: x^φ_{t_n} = coef_1 * x_{t_{n+1}} + coef_2 * output
+        # Note: we don't add noise (coef_3 term) during training as in the paper
+        x_phi_tn = coef_1 * x_tn_plus_1 + coef_2 * phi_output
+        
+        return x_phi_tn
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        """Compute consistency distillation loss according to Algorithm 2"""
+        sources = inputs['source']
+        targets = inputs['target']
+        device = sources.device
+        batch_size = sources.size(0)
+        
+        # Initialize EMA model if not done
+        if self.ema_model is None:
+            self._init_ema_model()
+        
+        # Sample n ~ U[1, N-1]
+        n = torch.randint(1, self.scheduler.config.T, (batch_size,), device=device)
+        
+        # Compute t_n and t_{n+1}
+        total_loss = 0.0
+        
+        for i in range(batch_size):
+            n_i = int(n[i].item())
+            t_n = n_i
+            t_n_plus_1 = n_i + 1
+            
+            # Sample x_{t_{n+1}} ~ N(x; t²_{n+1}I)
+            x_tn_plus_1 = self.scheduler.get_noisy_image(t_n_plus_1, targets[i], sources[i])
+            
+            # Compute x^φ_{t_n} using ODE solver
+            x_phi_tn = self._ode_solver_step(
+                x_tn_plus_1.unsqueeze(0), 
+                t_n_plus_1, 
+                t_n, 
+                sources[i].unsqueeze(0)
+            )
+            
+            # Compute f_θ(x_{t_{n+1}}, t_{n+1})
+            t_n_plus_1_tensor = torch.tensor([t_n_plus_1], device=device)
+            f_theta_tn_plus_1 = model(
+                x_tn_plus_1.unsqueeze(0), 
+                t_n_plus_1_tensor, 
+                lq=sources[i].unsqueeze(0)
+            )
+            
+            # Compute f_{θ^-}(x^φ_{t_n}, t_n) using EMA model
+            t_n_tensor = torch.tensor([t_n], device=device)
+            with torch.no_grad():
+                f_theta_minus_tn = self.ema_model(
+                    x_phi_tn, 
+                    t_n_tensor, 
+                    lq=sources[i].unsqueeze(0)
+                )
+            
+            # Compute distance d(f_θ(x_{t_{n+1}}, t_{n+1}), f_{θ^-}(x^φ_{t_n}, t_n))
+            # Using MSE + LPIPS as the distance metric
+            
+            # MSE loss
+            mse_loss = (f_theta_tn_plus_1 - f_theta_minus_tn).pow(2).mean()
+            
+            # LPIPS loss (average over channels)
+            lpips_sum = 0.0
+            for c in range(f_theta_tn_plus_1.shape[1]):
+                out_img = f_theta_tn_plus_1[0, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
+                tgt_img = f_theta_minus_tn[0, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
+                lpips_val = self.lpips_loss(out_img, tgt_img)
+                lpips_sum += lpips_val
+            lpips_loss = lpips_sum / f_theta_tn_plus_1.shape[1]
+            
+            # Combine losses with lambda weighting
+            loss_i = self.lambda_weight * (mse_loss + lpips_loss)
+            total_loss += loss_i
+        
+        # Average loss over batch
+        loss = total_loss / batch_size
+        
+        # Log images every 100 steps
+        step = self.state.global_step
+        if step and step % 100 == 0:
+            with torch.no_grad():
+                # Visualize the consistency training process
+                i = 0  # First item in batch
+                n_i = int(n[i].item())
+                t_n_plus_1 = n_i + 1
+                
+                x_tn_plus_1 = self.scheduler.get_noisy_image(t_n_plus_1, targets[i], sources[i])
+                t_n_plus_1_tensor = torch.tensor([t_n_plus_1], device=device)
+                f_theta_tn_plus_1 = model(
+                    x_tn_plus_1.unsqueeze(0), 
+                    t_n_plus_1_tensor, 
+                    lq=sources[i].unsqueeze(0)
+                )[0].detach().cpu().numpy()
+                
+                target_img = targets[i].detach().cpu().numpy()
+                x_tn_plus_1_img = x_tn_plus_1.detach().cpu().numpy()
+                
+                fig, axes = plt.subplots(3, 5, figsize=(20, 12))
+                
+                # Plot noisy input
+                for j in range(5):
+                    axes[0, j].imshow(x_tn_plus_1_img[j], cmap='viridis')
+                    axes[0, j].set_title(f'Noisy (t={t_n_plus_1}) Ch {j+1}')
+                    axes[0, j].axis('off')
+                
+                # Plot model output
+                for j in range(5):
+                    axes[1, j].imshow(f_theta_tn_plus_1[j], cmap='viridis')
+                    axes[1, j].set_title(f'Model Output Ch {j+1}')
+                    axes[1, j].axis('off')
+                
+                # Plot target
+                for j in range(5):
+                    axes[2, j].imshow(target_img[j], cmap='viridis')
+                    axes[2, j].set_title(f'Target Ch {j+1}')
+                    axes[2, j].axis('off')
+                
+                fig.suptitle(f'Consistency Distillation Training (n={n_i})', fontsize=16)
+                plt.tight_layout()
+                
+                wandb.log({
+                    'cd_training_comparison': wandb.Image(fig),
+                    'cd_loss': loss.item()
+                }, step=step)
+                
+                plt.close(fig)
+        
+        return (loss, None) if return_outputs else loss
+    
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        """Override training step to update EMA model after each step"""
+        loss = super().training_step(model, inputs, num_items_in_batch)
+        
+        # Update EMA model after gradient step
+        self._update_ema_model()
+        
+        return loss
+    
+    def prediction_step(self, model, inputs, *args, **kwargs):
+        """Override prediction step for evaluation"""
+        sources = inputs['source']
+        targets = inputs['target']
+        device = sources.device
+        
+        with torch.no_grad():
+            # For evaluation, use the model directly without noise
+            outputs = model(sources, torch.zeros(sources.size(0), device=device), lq=sources)
+            loss = (outputs - targets).pow(2).mean()
+            
+            # Occasionally visualize full denoising process
+            self._eval_batch_counter += 1
+            if self._eval_batch_counter % 100 == 1:
+                # Take first image
+                source = sources[0].unsqueeze(0)
+                target = targets[0].unsqueeze(0)
+                
+                # Start from pure noise
+                x = torch.randn_like(target, device=device)
+                
+                # Single-step denoising (consistency model property)
+                t = torch.tensor([1], device=device)
+                denoised = model(x, t, lq=source)
+                
+                fig, axes = plt.subplots(2, 5, figsize=(20, 8))
+                
+                # Plot source
+                for j in range(5):
+                    axes[0, j].imshow(source[0, j].cpu().numpy(), cmap='viridis')
+                    axes[0, j].set_title(f'Source Ch {j+1}')
+                    axes[0, j].axis('off')
+                
+                # Plot denoised
+                for j in range(5):
+                    axes[1, j].imshow(denoised[0, j].cpu().numpy(), cmap='viridis')
+                    axes[1, j].set_title(f'Denoised Ch {j+1}')
+                    axes[1, j].axis('off')
+                
+                plt.tight_layout()
+                
+                wandb.log({
+                    'val/cd_single_step_denoising': wandb.Image(fig),
+                    'val_step': self._eval_batch_counter,
+                })
+                
+                plt.close(fig)
+        
+        return (loss, None, None)
+
 # 5. Main training function
-def main():
+def main(custom_config=None):
     # config = TrainConfig()
     
-    config = TrainConfig(output_dir='/rds/user/ym429/hpc-work/dissertation/results/pix2pix')
+    if custom_config is not None:
+        config = custom_config
+    else:
+        config = TrainConfig(output_dir='/rds/user/ym429/hpc-work/dissertation/results/pix2pix')
+    
     set_seed(config.seed)
     # init WandB
     wandb.init(
@@ -535,6 +793,60 @@ def main():
         scheduler = DiffusionScheduler(CFG(config.kappa, config.p, config.eta_T, config.T))
         trainer = DiffusionTrainer(
             scheduler=scheduler,
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            data_collator=data_collator
+        )
+    elif config.use_consistency_distillation:
+        # Create the same model architecture as diffusion
+        model = UNetModelSwin(
+            image_size=512,
+            in_channels=len(source_channels),
+            model_channels=160,
+            out_channels=len(target_channels),
+            attention_resolutions=[64, 32, 16, 8],
+            dropout=0,
+            channel_mult=[1, 2, 2, 4],
+            num_res_blocks=[2, 2, 2, 2],
+            conv_resample=True,
+            dims=2,
+            use_fp16=False,
+            num_heads=1,
+            num_head_channels=32,
+            use_scale_shift_norm=True,
+            resblock_updown=False,
+            swin_depth=2,
+            swin_embed_dim=192,
+            window_size=8,
+            mlp_ratio=4,
+            cond_lq=True,
+            lq_size=512
+        )
+        
+        # Load pretrained weights from diffusion model
+        if config.cd_pretrained_path:
+            print(f"Loading pretrained diffusion model from {config.cd_pretrained_path}")
+            checkpoint = torch.load(config.cd_pretrained_path, map_location='cpu')
+            # Handle different checkpoint formats
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+            elif 'state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['state_dict'])
+            else:
+                model.load_state_dict(checkpoint)
+            print("Successfully loaded pretrained weights")
+        else:
+            print("WARNING: No pretrained path specified for consistency distillation!")
+            print("Training from scratch, which is not recommended.")
+        
+        print(f"using consistency distillation with swin unet")
+        scheduler = DiffusionScheduler(CFG(config.kappa, config.p, config.eta_T, config.T))
+        trainer = ConsistencyDistillationTrainer(
+            scheduler=scheduler,
+            ema_decay=config.cd_ema_decay,
+            lambda_weight=config.cd_lambda_weight,
             model=model,
             args=training_args,
             train_dataset=train_dataset,
