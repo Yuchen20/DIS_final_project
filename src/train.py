@@ -323,6 +323,8 @@ class Pix2PixTrainer(Trainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._eval_batch_counter = 0
+        # Track references to prevent memory leaks
+        self._last_fake_targets = None
         
     def create_optimizer(self):
         """Create optimizer for the generator (main model)"""
@@ -360,41 +362,48 @@ class Pix2PixTrainer(Trainer):
         # ========================
         # Update Discriminator
         # ========================
-        self.optimizer_D.zero_grad()
-        
-        # Generate fake images for discriminator (detach immediately to save memory)
-        with torch.no_grad():
-            fake_targets_d = model(sources).detach().clone()
-            fake_targets_d = torch.clamp(fake_targets_d, -10, 10)
-        
-        try:
-            loss_D, loss_D_real, loss_D_fake = model.compute_discriminator_loss(
-                sources, targets, fake_targets_d
-            )
+        # We need to handle discriminator update manually since Trainer only handles one optimizer
+        with torch.enable_grad():  # Ensure gradients are enabled
+            self.optimizer_D.zero_grad()
             
-            # Check for NaN/Inf
-            if torch.isnan(loss_D) or torch.isinf(loss_D):
-                print(f"Warning: NaN/Inf in discriminator loss: {loss_D}")
-                loss_D = torch.tensor(0.1, device=device, requires_grad=True)
+            # Generate fake images for discriminator (detach to not backprop through generator)
+            with torch.no_grad():
+                fake_targets_d = model(sources).detach()
+                fake_targets_d = torch.clamp(fake_targets_d, -10, 10)
+            
+            try:
+                loss_D, loss_D_real, loss_D_fake = model.compute_discriminator_loss(
+                    sources, targets, fake_targets_d
+                )
+                
+                # Check for NaN/Inf
+                if torch.isnan(loss_D) or torch.isinf(loss_D):
+                    print(f"Warning: NaN/Inf in discriminator loss: {loss_D}")
+                    loss_D = torch.tensor(0.1, device=device, requires_grad=True)
+                    loss_D_real = torch.tensor(0.05, device=device)
+                    loss_D_fake = torch.tensor(0.05, device=device)
+                
+                loss_D = torch.clamp(loss_D, 0, 100)
+                
+                # Manually handle discriminator backward and step
+                if self.args.fp16 and hasattr(self, 'scaler'):
+                    # If using mixed precision, use the scaler
+                    self.scaler.scale(loss_D).backward()
+                    self.scaler.unscale_(self.optimizer_D)
+                    torch.nn.utils.clip_grad_norm_(model.discriminator.parameters(), max_norm=1.0)
+                    self.scaler.step(self.optimizer_D)
+                    self.scaler.update()
+                else:
+                    # Regular backward pass
+                    loss_D.backward()
+                    torch.nn.utils.clip_grad_norm_(model.discriminator.parameters(), max_norm=1.0)
+                    self.optimizer_D.step()
+                
+            except RuntimeError as e:
+                print(f"Error in discriminator step: {e}")
+                loss_D = torch.tensor(0.1, device=device)
                 loss_D_real = torch.tensor(0.05, device=device)
                 loss_D_fake = torch.tensor(0.05, device=device)
-            
-            loss_D = torch.clamp(loss_D, 0, 100)
-            
-            # Use accelerator for discriminator backward pass
-            self.accelerator.backward(loss_D)
-            torch.nn.utils.clip_grad_norm_(model.discriminator.parameters(), max_norm=1.0)
-            self.optimizer_D.step()
-            
-        except RuntimeError as e:
-            print(f"Error in discriminator step: {e}")
-            loss_D = torch.tensor(0.1, device=device, requires_grad=True)
-            loss_D_real = torch.tensor(0.05, device=device)
-            loss_D_fake = torch.tensor(0.05, device=device)
-        
-        # Clear discriminator variables to free memory
-        del fake_targets_d
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
         
         # ========================
         # Update Generator (this will be handled by Trainer's optimizer step)
@@ -426,10 +435,23 @@ class Pix2PixTrainer(Trainer):
         # Log images every 100 steps with memory management
         step = self.state.global_step
         if step and step % 100 == 0:  
-            self._log_images_with_cleanup(sources, fake_targets_g, targets, loss_G, loss_G_GAN, loss_G_L1, loss_D, loss_D_real, loss_D_fake, step)
+            # Use detached tensors for visualization to avoid keeping gradients
+            with torch.no_grad():
+                self._log_images_with_cleanup(
+                    sources.detach(), 
+                    fake_targets_g.detach(), 
+                    targets.detach(), 
+                    loss_G.detach(), 
+                    loss_G_GAN.detach(), 
+                    loss_G_L1.detach(), 
+                    loss_D.detach(), 
+                    loss_D_real.detach(), 
+                    loss_D_fake.detach(), 
+                    step
+                )
         
-        # Clean up generator variables
-        del fake_targets_g
+        # DO NOT delete fake_targets_g here - it's needed for backward pass!
+        # The Trainer will handle cleanup after backward pass
         
         # Return generator loss - this will be used by Trainer for generator optimization
         return loss_G
@@ -489,10 +511,7 @@ class Pix2PixTrainer(Trainer):
             # Clear variables
             del source_img, fake_img, target_img, fig
             
-        # Force garbage collection
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        # No need for aggressive garbage collection every time
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """This method is called during evaluation"""
@@ -537,9 +556,7 @@ class Pix2PixTrainer(Trainer):
             if self._eval_batch_counter % 100 == 0:  
                 self._log_validation_images_with_cleanup(sources, fake_targets, targets, loss_G, loss_G_GAN, loss_G_L1)
             
-            # Clean up validation variables
-            del fake_targets
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            # No need to delete fake_targets - it's in a no_grad context
         
         return (loss_G, None, None)
     
@@ -587,12 +604,8 @@ class Pix2PixTrainer(Trainer):
             
             # Important: Close figure and clear variables
             plt.close(fig)
-            del source_img, fake_img, target_img, fig
             
-        # Force garbage collection
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        # No need for aggressive garbage collection every time
 
 class ConsistencyDistillationTrainer(Trainer):
     """Trainer for Consistency Distillation following Algorithm 2 from the paper"""
