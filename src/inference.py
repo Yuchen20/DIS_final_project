@@ -185,7 +185,7 @@ class SwinUNetPredictor(BasePredictor):
         return model
 
     def predict(self, sources):
-        config = CFG(kappa=2.0, p=0.3, eta_T=0.99, T=4)
+        config = CFG(kappa=2.0, p=0.3, eta_T=0.99, T=15)
         scheduler = DiffusionScheduler(config)
 
         # Initialize x with noisy image
