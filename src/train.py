@@ -330,25 +330,27 @@ class Pix2PixTrainer(Trainer):
         )
         self._eval_batch_counter = 0  # Add a counter for prediction steps
 
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+    def training_step(self, model, inputs):
+        """Override training_step to handle GAN training properly"""
+        model.train()
         sources = inputs['source']
         targets = inputs['target']
         device = sources.device
-        batch_size = sources.size(0)
         
         # Generate fake images
         fake_targets = model(sources)
         
         # Update discriminator
         self.optimizer_D.zero_grad()
-        loss_D, loss_D_real, loss_D_fake = model.compute_discriminator_loss(sources, targets, fake_targets)
-        loss_D.backward()
+        loss_D, loss_D_real, loss_D_fake = model.compute_discriminator_loss(sources, targets, fake_targets.detach())
+        self.accelerator.backward(loss_D)
         self.optimizer_D.step()
         
         # Update generator
         self.optimizer_G.zero_grad()
+        fake_targets = model(sources)  # Re-generate to get gradients
         loss_G, loss_G_GAN, loss_G_L1 = model.compute_generator_loss(sources, targets, fake_targets)
-        loss_G.backward()
+        self.accelerator.backward(loss_G)
         self.optimizer_G.step()
         
         # Log images every 100 steps
@@ -381,6 +383,19 @@ class Pix2PixTrainer(Trainer):
                 'loss_D_fake': loss_D_fake.item()
             }, step=step)
             plt.close(fig)
+        
+        # Return the loss for logging (detached to prevent double backward)
+        return loss_G.detach()
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        """This method is not used when training_step is overridden"""
+        # This is only called during evaluation
+        sources = inputs['source']
+        targets = inputs['target']
+        
+        with torch.no_grad():
+            fake_targets = model(sources)
+            loss_G, _, _ = model.compute_generator_loss(sources, targets, fake_targets)
         
         return (loss_G, fake_targets) if return_outputs else loss_G
 
