@@ -25,7 +25,7 @@ from collections import OrderedDict
 class TrainConfig:
     seed: int = 42
     learning_rate: float = 5e-5
-    num_train_epochs: int = 2
+    num_train_epochs: int = 3
     per_device_train_batch_size: int = 2
     per_device_eval_batch_size: int = 4
     weight_decay: float = 0
