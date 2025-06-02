@@ -23,7 +23,7 @@ import lpips
 class TrainConfig:
     seed: int = 42
     learning_rate: float = 5e-5
-    num_train_epochs: int = 10
+    num_train_epochs: int = 2
     per_device_train_batch_size: int = 2
     per_device_eval_batch_size: int = 4
     weight_decay: float = 0
@@ -43,11 +43,11 @@ class TrainConfig:
     T: int = 15
     # training mode
     use_diffusion: bool = False
-    use_pix2pix: bool = True
-    use_consistency_distillation: bool = False
+    use_pix2pix: bool = False
+    use_consistency_distillation: bool = True
     # consistency distillation params
     cd_ema_decay: float = 0.999  # μ in the paper
-    cd_pretrained_path: str = None  # Path to pretrained diffusion model
+    cd_pretrained_path: str = "/rds/user/ym429/hpc-work/dissertation/results/rescell-15step-no_loss_coef-LPIPS/checkpoint-69120"  # Path to pretrained diffusion model
     cd_lambda_weight: float = 1.0  # Weight function λ(t_n)
 
 
@@ -771,14 +771,14 @@ def main(custom_config=None):
     if custom_config is not None:
         config = custom_config
     else:
-        config = TrainConfig(output_dir='/rds/user/ym429/hpc-work/dissertation/results/pix2pix')
+        config = TrainConfig(output_dir='/rds/user/ym429/hpc-work/dissertation/results/rescell-15step-distillation')
     
     set_seed(config.seed)
     # init WandB
     wandb.init(
         project='diffusion-denoise',
         config=asdict(config),
-        dir='/rds/user/ym429/hpc-work/dissertation/results/pix2pix/wandb'
+        dir='/rds/user/ym429/hpc-work/dissertation/results/rescell-15step-distillation/wandb'
     )
     
     # Define custom metrics for wandb
