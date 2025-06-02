@@ -16,6 +16,8 @@ from unet import UNetModelSwin
 from pix2pix import Pix2PixModel
 from pix2pix_improved import ImprovedPix2PixModel
 import lpips
+from safetensors.torch import load_file as load_safetensors
+from collections import OrderedDict
 
 
 # 1. Configuration
@@ -65,6 +67,42 @@ def data_collator(batch):
     sources = torch.stack([item[0] for item in batch])
     targets = torch.stack([item[1] for item in batch])
     return {'source': sources, 'target': targets}
+
+def load_hf_checkpoint(model_path, device='cpu'):
+    """Helper function to load Hugging Face Trainer checkpoint"""
+    if os.path.isdir(model_path):
+        # For Hugging Face Trainer saved models
+        safetensors_path = os.path.join(model_path, 'model.safetensors')
+        bin_path = os.path.join(model_path, 'pytorch_model.bin')
+
+        if os.path.exists(safetensors_path):
+            state_dict = load_safetensors(safetensors_path, device=device)
+            new_state_dict = OrderedDict()
+            for k, v in state_dict.items():
+                new_key = k.replace("_orig_mod.", "")  # remove the prefix from torch.compile
+                new_state_dict[new_key] = v
+            return new_state_dict
+        elif os.path.exists(bin_path):
+            checkpoint = torch.load(bin_path, map_location=device)
+            # Handle different checkpoint formats
+            if 'model_state_dict' in checkpoint:
+                return checkpoint['model_state_dict']
+            elif 'state_dict' in checkpoint:
+                return checkpoint['state_dict']
+            else:
+                return checkpoint
+        else:
+            raise ValueError(f"Could not find model weights at {safetensors_path} or {bin_path}")
+    else:
+        # For regular checkpoint files
+        checkpoint = torch.load(model_path, map_location=device)
+        # Handle different checkpoint formats
+        if 'model_state_dict' in checkpoint:
+            return checkpoint['model_state_dict']
+        elif 'state_dict' in checkpoint:
+            return checkpoint['state_dict']
+        else:
+            return checkpoint
 
 # 4. Custom Trainer overriding loss computation
 class DiffusionTrainer(Trainer):
@@ -900,15 +938,13 @@ def main(custom_config=None):
         # Load pretrained weights from diffusion model
         if config.cd_pretrained_path:
             print(f"Loading pretrained diffusion model from {config.cd_pretrained_path}")
-            checkpoint = torch.load(config.cd_pretrained_path, map_location='cpu')
-            # Handle different checkpoint formats
-            if 'model_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['model_state_dict'])
-            elif 'state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['state_dict'])
-            else:
-                model.load_state_dict(checkpoint)
-            print("Successfully loaded pretrained weights")
+            try:
+                state_dict = load_hf_checkpoint(config.cd_pretrained_path, device='cpu')
+                model.load_state_dict(state_dict)
+                print("Successfully loaded pretrained weights")
+            except Exception as e:
+                print(f"Error loading checkpoint: {e}")
+                print("Training from scratch instead.")
         else:
             print("WARNING: No pretrained path specified for consistency distillation!")
             print("Training from scratch, which is not recommended.")
