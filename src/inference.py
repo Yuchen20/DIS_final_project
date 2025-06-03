@@ -21,7 +21,7 @@ from collections import OrderedDict
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../models')))
 from plain_unet import UNet
 from unet import UNetModelSwin
-from pix2pix import Pix2PixModel
+from pix2pix_improved import ImprovedPix2PixModel
 
 class BasePredictor(ABC):
     """Base class for model predictors"""
@@ -263,18 +263,44 @@ class SwinUNetPredictor(BasePredictor):
 class Pix2PixPredictor(BasePredictor):
     """Predictor for Pix2Pix model"""
     def load_model(self, model_path):
-        model = Pix2PixModel(
-            input_nc=3,  # 3 input channels
-            output_nc=3,  # 3 output channels
+        # Determine GPU IDs
+        gpu_ids = []
+        if torch.cuda.is_available():
+            gpu_ids = [i for i in range(torch.cuda.device_count())]
+        
+        model = ImprovedPix2PixModel(
+            input_nc=5,  # 5 input channels
+            output_nc=5,  # 5 output channels
             ngf=64,
             ndf=64,
             norm='batch',
-            use_dropout=False  # No dropout during inference
+            use_dropout=False,  # No dropout during inference
+            lambda_L1=100.0,
+            gan_mode='vanilla',
+            gpu_ids=gpu_ids
         )
-        checkpoint = self._load_hf_checkpoint(model_path)
-        model.load_state_dict(checkpoint)
+        
+        # Load checkpoint - handle both standalone training format and HF format
+        checkpoint_data = self._load_pix2pix_checkpoint(model_path)
+        
+        # Load only the generator weights
+        model.netG.load_state_dict(checkpoint_data)
         model = model.to(self.device)
-        return model.generator  # Only use generator for inference
+        return model.netG  # Only use generator for inference
+    
+    def _load_pix2pix_checkpoint(self, model_path):
+        """Load Pix2Pix checkpoint with proper format handling"""
+        if os.path.isfile(model_path) and model_path.endswith('.pth'):
+            # Standalone training checkpoint format
+            checkpoint = torch.load(model_path, map_location=self.device)
+            if 'netG_state_dict' in checkpoint:
+                return checkpoint['netG_state_dict']
+            else:
+                # Fallback: assume it's the generator state dict directly
+                return checkpoint
+        else:
+            # Try HuggingFace format
+            return self._load_hf_checkpoint(model_path)
 
     def predict(self, sources):
         with torch.no_grad():
@@ -399,8 +425,8 @@ def main():
     # Create test dataset
     test_dataset = DiffusionDataset(
         csv_file_list=test_csv_list,
-        source_channels=[7, 7, 7, 7, 7],  # 3 input channels
-        target_channels=[1, 2, 3, 4, 5],  # 3 output channels
+        source_channels=[7, 7, 7, 7, 7],  # 5 input channels (all channel 7)
+        target_channels=[1, 2, 3, 4, 5],  # 5 output channels
         img_size=(512, 512),
         get_prefix=True
     )
@@ -445,7 +471,7 @@ def main():
             metrics = calculate_metrics(output[i], target[i])
             
             # Save metrics for each channel
-            for ch_idx in range(5):  # 3 channels for pix2pix
+            for ch_idx in range(5):  # 5 channels for swin_unet and pix2pix
                 save_metrics_to_csv(metrics, metrics_file, prefix[i], ch_idx)
             
             # Save predictions and targets
@@ -465,7 +491,7 @@ if __name__ == '__main__':
 ## For Swin UNet:
 # python inference.py --model_path /home/ym429/rds/hpc-work/dissertation/results/rescell/checkpoint-69120 --model_type swin_unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/rescell
 
-## For Pix2Pix:
+## For Pix2Pix (standalone training):
 # python inference.py --model_path /path/to/pix2pix_checkpoint.pth --model_type pix2pix --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/pix2pix
 
 

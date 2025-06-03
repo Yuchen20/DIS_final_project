@@ -50,7 +50,8 @@ class TrainConfig:
     # consistency distillation params
     cd_ema_decay: float = 0.999  # μ in the paper
     cd_pretrained_path: str = "/rds/user/ym429/hpc-work/dissertation/results/rescell-15step-no_loss_coef-LPIPS/checkpoint-69120"  # Path to pretrained diffusion model
-    cd_lambda_weight: float = 1.0  # Weight function λ(t_n)
+    cd_lambda_weight: float = 0.2  # Weight function λ(t_n)
+    cd_target_reg_weight: float = 1.0  # Weight for target regularization term
 
 
 
@@ -557,10 +558,11 @@ class ConsistencyDistillationTrainer(Trainer):
     """Trainer for Consistency Distillation following Algorithm 2 from the paper"""
     
     def __init__(self, scheduler: DiffusionScheduler, ema_decay: float = 0.999, 
-                 lambda_weight: float = 1.0, *args, **kwargs):
+                 lambda_weight: float = 1.0, target_reg_weight: float = 0.1, *args, **kwargs):
         self.scheduler = scheduler
         self.ema_decay = ema_decay
         self.lambda_weight = lambda_weight
+        self.target_reg_weight = target_reg_weight
         self._eval_batch_counter = 0
         
         # Initialize LPIPS loss
@@ -672,24 +674,68 @@ class ConsistencyDistillationTrainer(Trainer):
             # Compute distance d(f_θ(x_{t_{n+1}}, t_{n+1}), f_{θ^-}(x^φ_{t_n}, t_n))
             # Using MSE + LPIPS as the distance metric
             
-            # MSE loss
-            mse_loss = (f_theta_tn_plus_1 - f_theta_minus_tn).pow(2).mean()
+            # MSE loss (consistency term)
+            consistency_mse_loss = (f_theta_tn_plus_1 - f_theta_minus_tn).pow(2).mean()
             
-            # LPIPS loss (average over channels)
-            lpips_sum = 0.0
+            # LPIPS loss (consistency term - average over channels)
+            consistency_lpips_sum = 0.0
             for c in range(f_theta_tn_plus_1.shape[1]):
                 out_img = f_theta_tn_plus_1[0, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
                 tgt_img = f_theta_minus_tn[0, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
                 lpips_val = self.lpips_loss(out_img, tgt_img)
-                lpips_sum += lpips_val
-            lpips_loss = lpips_sum / f_theta_tn_plus_1.shape[1]
+                consistency_lpips_sum += lpips_val
+            consistency_lpips_loss = consistency_lpips_sum / f_theta_tn_plus_1.shape[1]
             
-            # Combine losses with lambda weighting
-            loss_i = self.lambda_weight * (mse_loss + lpips_loss)
+            # Target regularization term: compare first prediction with target
+            target_mse_loss = (f_theta_tn_plus_1 - targets[i].unsqueeze(0)).pow(2).mean()
+            
+            # Target LPIPS loss (average over channels)
+            target_lpips_sum = 0.0
+            for c in range(f_theta_tn_plus_1.shape[1]):
+                pred_img = f_theta_tn_plus_1[0, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
+                target_img = targets[i, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
+                lpips_val = self.lpips_loss(pred_img, target_img)
+                target_lpips_sum += lpips_val
+            target_lpips_loss = target_lpips_sum / f_theta_tn_plus_1.shape[1]
+            
+            # Combine all losses
+            consistency_loss = self.lambda_weight * (consistency_mse_loss + consistency_lpips_loss)
+            target_reg_loss = self.target_reg_weight * (target_mse_loss + target_lpips_loss)
+            loss_i = consistency_loss + target_reg_loss
             total_loss += loss_i
         
         # Average loss over batch
         loss = total_loss / batch_size
+        
+        # Store loss components for logging (using first batch item as representative)
+        if batch_size > 0:
+            # Recalculate components for first item for logging purposes
+            i = 0
+            n_i = int(n[i].item())
+            t_n_plus_1 = n_i + 1
+            x_tn_plus_1 = self.scheduler.get_noisy_image(t_n_plus_1, targets[i], sources[i])
+            x_phi_tn = self._ode_solver_step(
+                x_tn_plus_1.unsqueeze(0), t_n_plus_1, n_i, sources[i].unsqueeze(0)
+            )
+            
+            t_n_plus_1_tensor = torch.tensor([t_n_plus_1], device=device)
+            f_theta_tn_plus_1 = model(
+                x_tn_plus_1.unsqueeze(0), t_n_plus_1_tensor, lq=sources[i].unsqueeze(0)
+            )
+            
+            t_n_tensor = torch.tensor([n_i], device=device)
+            with torch.no_grad():
+                f_theta_minus_tn = self.ema_model(
+                    x_phi_tn, t_n_tensor, lq=sources[i].unsqueeze(0)
+                )
+            
+            # Calculate individual loss components for logging
+            consistency_mse = (f_theta_tn_plus_1 - f_theta_minus_tn).pow(2).mean()
+            target_mse = (f_theta_tn_plus_1 - targets[i].unsqueeze(0)).pow(2).mean()
+            
+            # Store for potential logging
+            self._last_consistency_loss = consistency_mse.item()
+            self._last_target_reg_loss = target_mse.item()
         
         # Log images every 100 steps
         step = self.state.global_step
@@ -734,10 +780,19 @@ class ConsistencyDistillationTrainer(Trainer):
                 fig.suptitle(f'Consistency Distillation Training (n={n_i})', fontsize=16)
                 plt.tight_layout()
                 
-                wandb.log({
+                # Enhanced logging with loss components
+                log_dict = {
                     'cd_training_comparison': wandb.Image(fig),
-                    'cd_loss': loss.item()
-                }, step=step)
+                    'cd_total_loss': loss.item(),
+                }
+                
+                # Add individual loss components if available
+                if hasattr(self, '_last_consistency_loss'):
+                    log_dict['cd_consistency_loss'] = self._last_consistency_loss
+                if hasattr(self, '_last_target_reg_loss'):
+                    log_dict['cd_target_reg_loss'] = self._last_target_reg_loss
+                
+                wandb.log(log_dict, step=step)
                 
                 plt.close(fig)
         
@@ -945,9 +1000,6 @@ def main(custom_config=None):
             except Exception as e:
                 print(f"Error loading checkpoint: {e}")
                 print("Training from scratch instead.")
-        else:
-            print("WARNING: No pretrained path specified for consistency distillation!")
-            print("Training from scratch, which is not recommended.")
         
         print(f"using consistency distillation with swin unet")
         scheduler = DiffusionScheduler(CFG(config.kappa, config.p, config.eta_T, config.T))
@@ -955,6 +1007,7 @@ def main(custom_config=None):
             scheduler=scheduler,
             ema_decay=config.cd_ema_decay,
             lambda_weight=config.cd_lambda_weight,
+            target_reg_weight=config.cd_target_reg_weight,
             model=model,
             args=training_args,
             train_dataset=train_dataset,
