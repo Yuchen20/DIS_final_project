@@ -17,6 +17,16 @@ from safetensors.torch import load_file as load_safetensors
 # Assume `model_weights` is loaded from safetensors
 from collections import OrderedDict
 
+# Add the training script to path so we can import Pix2PixTrainingConfig
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
+try:
+    from train_pix2pix_standalone import Pix2PixTrainingConfig
+except ImportError:
+    # If import fails, create a dummy class to prevent errors
+    from dataclasses import dataclass
+    @dataclass
+    class Pix2PixTrainingConfig:
+        pass
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../models')))
 from plain_unet import UNet
@@ -292,7 +302,24 @@ class Pix2PixPredictor(BasePredictor):
         """Load Pix2Pix checkpoint with proper format handling"""
         if os.path.isfile(model_path) and model_path.endswith('.pth'):
             # Standalone training checkpoint format
-            checkpoint = torch.load(model_path, map_location=self.device)
+            try:
+                # First try with weights_only=False for trusted checkpoint files that contain config objects
+                checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+            except Exception as e:
+                print(f"Failed to load with weights_only=False: {e}")
+                try:
+                    # Alternative: Add safe globals and try again
+                    import torch.serialization
+                    torch.serialization.add_safe_globals([Pix2PixTrainingConfig])
+                    checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
+                except Exception as e2:
+                    print(f"Failed to load with safe globals: {e2}")
+                    # Final fallback: load with weights_only=False and ignore safety warnings
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+            
             if 'netG_state_dict' in checkpoint:
                 return checkpoint['netG_state_dict']
             else:
