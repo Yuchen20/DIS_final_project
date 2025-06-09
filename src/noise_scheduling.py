@@ -17,8 +17,7 @@ class CFG:
     kappa: float = 2
     p: float = 0.3
     eta_T: float = 0.999
-    T: int = 15 # Total number of diffusion steps (usually 1 to T)
-    # eta_1 will be calculated in post_init, not passed during initialization
+    T: int = 10 #ll be calculated in post_init, not passed during initialization
     eta_1: float = dataclasses.field(init=False)
 
     def __post_init__(self):
@@ -238,7 +237,8 @@ class DiffusionScheduler:
 
         # Calculate scheduled residual term (rewritten form)
         # This is (1 - eta_t) * image_original + eta_t * image_target
-        scheduled_residual_term = (1.0 - eta_t_val) * image_original + eta_t_val * image_traget
+        scheduled_residual_term = eta_t_val * image_original + (1.0 - eta_t_val) * image_traget
+        # scheduled_residual_term = (1.0 - eta_t_val) * image_original + eta_t_val * image_traget
 
         # Combine terms
         noisy_image = scheduled_residual_term + scheduled_noise_term

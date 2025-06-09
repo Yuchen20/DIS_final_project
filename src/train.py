@@ -3,6 +3,7 @@ import random
 import numpy as np
 import torch
 import wandb
+import argparse
 from dataclasses import dataclass, asdict
 from transformers import Trainer, TrainingArguments
 from data_loader import DiffusionDataset
@@ -858,25 +859,36 @@ class ConsistencyDistillationTrainer(Trainer):
         return (loss, None, None)
 
 # 5. Main training function
-def main(custom_config=None):
-    # config = TrainConfig()
+def main(args=None):
+    # Start with default config
+    config = TrainConfig(output_dir='/rds/user/ym429/hpc-work/dissertation/results/rescell-15step-distillation')
     
-    if custom_config is not None:
-        config = custom_config
-    else:
-        config = TrainConfig(output_dir='/rds/user/ym429/hpc-work/dissertation/results/rescell-15step-distillation')
+    # Override config with command line arguments if provided
+    if args is not None:
+        # Update config with provided arguments
+        for key, value in vars(args).items():
+            if hasattr(config, key):
+                # For boolean flags with action='store_true', they will be False by default
+                # and True if the flag is provided
+                if key in ['use_diffusion', 'use_pix2pix', 'use_consistency_distillation', 'load_best_model_at_end', 'fp16']:
+                    setattr(config, key, value)
+                elif value is not None:  # For other arguments, only override if explicitly provided
+                    setattr(config, key, value)
     
     set_seed(config.seed)
     # init WandB
     wandb.init(
         project='diffusion-denoise',
         config=asdict(config),
-        dir='/rds/user/ym429/hpc-work/dissertation/results/rescell-15step-distillation/wandb'
+        dir=config.output_dir + '/wandb'
     )
     
     # Define custom metrics for wandb
     wandb.define_metric("val_step")
     wandb.define_metric("val/diffusion_process", step_metric="val_step")
+
+    ## print the config file
+    print(config)
 
     # Data loading setup (from data_processing.ipynb guide)
     source_channels = [7, 7, 7, 7, 7]
@@ -1062,8 +1074,42 @@ def main(custom_config=None):
 
     trainer.train()
 
+
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description='Train a model')
+    parser.add_argument('--output_dir', type=str, default=None, help='Output directory')
+    parser.add_argument('--seed', type=int, default=None, help='Random seed')
+    parser.add_argument('--learning_rate', type=float, default=None, help='Learning rate')
+    parser.add_argument('--num_train_epochs', type=int, default=None, help='Number of training epochs')
+    parser.add_argument('--per_device_train_batch_size', type=int, default=None, help='Batch size for training')
+    parser.add_argument('--per_device_eval_batch_size', type=int, default=None, help='Batch size for evaluation')
+    parser.add_argument('--weight_decay', type=float, default=None, help='Weight decay')
+    parser.add_argument('--lr_scheduler_type', type=str, default=None, help='Learning rate scheduler type')
+    parser.add_argument('--warmup_steps', type=int, default=None, help='Warmup steps')
+    parser.add_argument('--logging_steps', type=int, default=None, help='Logging steps')
+    parser.add_argument('--evaluation_strategy', type=str, default=None, help='Evaluation strategy')
+    parser.add_argument('--save_strategy', type=str, default=None, help='Save strategy')
+    parser.add_argument('--load_best_model_at_end', action='store_true', help='Load best model at end')
+    parser.add_argument('--fp16', action='store_true', help='Use fp16')
+    parser.add_argument('--report_to', type=str, default=None, help='Report to')
+    
+    # Diffusion parameters
+    parser.add_argument('--kappa', type=float, default=None, help='Diffusion kappa parameter')
+    parser.add_argument('--p', type=float, default=None, help='Diffusion p parameter')
+    parser.add_argument('--eta_T', type=float, default=None, help='Diffusion eta_T parameter')
+    parser.add_argument('--T', type=int, default=None, help='Diffusion timesteps')
+    
+    # Training mode flags
+    parser.add_argument('--use_diffusion', action='store_true', help='Use diffusion training')
+    parser.add_argument('--use_pix2pix', action='store_true', help='Use pix2pix training')
+    parser.add_argument('--use_consistency_distillation', action='store_true', help='Use consistency distillation training')
+    parser.add_argument('--cd_ema_decay', type=float, default=None, help='Consistency distillation ema decay')
+    parser.add_argument('--cd_pretrained_path', type=str, default=None, help='Consistency distillation pretrained path')
+    parser.add_argument('--cd_lambda_weight', type=float, default=None, help='Consistency distillation lambda weight')
+    parser.add_argument('--cd_target_reg_weight', type=float, default=None, help='Consistency distillation target regularization weight')
+    args = parser.parse_args()
+
+    main(args)
 
 # accelerate launch src/train.py  --output_dir /home/ym429/rds/hpc-work/dissertation/results/
 
