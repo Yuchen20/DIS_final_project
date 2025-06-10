@@ -26,7 +26,7 @@ from collections import OrderedDict
 class TrainConfig:
     seed: int = 42
     learning_rate: float = 5e-5
-    num_train_epochs: int = 3
+    num_train_epochs: int = 10
     per_device_train_batch_size: int = 2
     per_device_eval_batch_size: int = 4
     weight_decay: float = 0
@@ -44,6 +44,7 @@ class TrainConfig:
     p: float = 0.3
     eta_T: float = 0.99
     T: int = 15
+    use_loss_coef: bool = False
     # training mode
     use_diffusion: bool = False
     use_pix2pix: bool = False
@@ -162,14 +163,16 @@ class DiffusionTrainer(Trainer):
 
         # Combine MSE and LPIPS (equal weighting)
         loss = mse_loss + lpips_loss
-
+        if self.config.use_loss_coef:
+            loss = loss * coefs
+            
         if torch.isnan(loss):
             print(f"Warning: NaN loss detected at step {self.state.global_step}")
             loss = torch.tensor(1000.0, device=device, requires_grad=True)
     
         # log images every 100 steps
         step = self.state.global_step
-        if step and step % 50 == 0:
+        if step and step % 200 == 0:
             # Get first item in batch
             noisy_img = noisy[0].detach().cpu().numpy()  # [5, 512, 512]
             denoised_img = outputs[0].detach().cpu().numpy()  # [5, 512, 512]
@@ -280,7 +283,6 @@ class DiffusionTrainer(Trainer):
 
                     for j in range(10):
                         # the target image  
-
                         axes[j, n_steps].imshow(target_img[j % 5], cmap='viridis')
                         axes[j, n_steps].axis('off')
                     
@@ -1098,6 +1100,7 @@ if __name__ == '__main__':
     parser.add_argument('--p', type=float, default=None, help='Diffusion p parameter')
     parser.add_argument('--eta_T', type=float, default=None, help='Diffusion eta_T parameter')
     parser.add_argument('--T', type=int, default=None, help='Diffusion timesteps')
+    parser.add_argument('--use_loss_coef', action='store_true', help='Use loss coef')
     
     # Training mode flags
     parser.add_argument('--use_diffusion', action='store_true', help='Use diffusion training')
