@@ -109,8 +109,9 @@ def load_hf_checkpoint(model_path, device='cpu'):
 
 # 4. Custom Trainer overriding loss computation
 class DiffusionTrainer(Trainer):
-    def __init__(self, scheduler: DiffusionScheduler, *args, **kwargs):
+    def __init__(self, scheduler: DiffusionScheduler, use_loss_coef: bool = False, *args, **kwargs):
         self.scheduler = scheduler
+        self.use_loss_coef = use_loss_coef
         self._eval_batch_counter = 0
         # Initialize LPIPS loss (VGG backbone, on cuda:0 by default)
         self.lpips_loss = lpips.LPIPS(net='vgg').to('cuda:0')
@@ -163,7 +164,7 @@ class DiffusionTrainer(Trainer):
 
         # Combine MSE and LPIPS (equal weighting)
         loss = mse_loss + lpips_loss
-        if self.config.use_loss_coef:
+        if self.use_loss_coef:
             loss = loss * coefs
             
         if torch.isnan(loss):
@@ -972,6 +973,7 @@ def main(args=None):
         scheduler = DiffusionScheduler(CFG(config.kappa, config.p, config.eta_T, config.T))
         trainer = DiffusionTrainer(
             scheduler=scheduler,
+            use_loss_coef=config.use_loss_coef,
             model=model,
             args=training_args,
             train_dataset=train_dataset,
