@@ -144,28 +144,34 @@ class DiffusionTrainer(Trainer):
         # forward pass
         outputs = model(noisy, ts, lq = sources.to(device))
 
-        diff = outputs - targets
-        squared_diff = diff.pow(2)
-        mse_loss = squared_diff.mean()
-
-        # LPIPS expects shape (N,3,H,W) or (N,1,H,W), so flatten channel dim to batch for 5ch
-        # We'll compute mean LPIPS over all channels
-        lpips_total = 0.0
+        # Compute per-sample losses
+        per_sample_losses = []
+        
         for b in range(batch_size):
-            lpips_sum = 0.0
+            # MSE loss per sample
+            sample_mse = (outputs[b] - targets[b]).pow(2).mean()
+            
+            # LPIPS loss per sample (average over channels)
+            sample_lpips_sum = 0.0
             for c in range(outputs.shape[1]):
-                # LPIPS expects 3-channel or 1-channel, so unsqueeze channel
+                # LPIPS expects 3-channel or 1-channel, so repeat to 3 channels
                 out_img = outputs[b, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)  # (1,3,H,W)
                 tgt_img = targets[b, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
                 lpips_val = self.lpips_loss(out_img.to(device), tgt_img.to(device))
-                lpips_sum += lpips_val
-            lpips_total += lpips_sum / outputs.shape[1]
-        lpips_loss = lpips_total / batch_size
-
-        # Combine MSE and LPIPS (equal weighting)
-        loss = mse_loss + lpips_loss
-        if self.use_loss_coef:
-            loss = loss * coefs
+                sample_lpips_sum += lpips_val
+            sample_lpips = sample_lpips_sum / outputs.shape[1]
+            
+            # Combine MSE and LPIPS for this sample
+            sample_loss = sample_mse + sample_lpips
+            
+            # Apply loss coefficient if enabled
+            if self.use_loss_coef:
+                sample_loss = sample_loss * coefs[b].squeeze()
+            
+            per_sample_losses.append(sample_loss)
+        
+        # Average across batch
+        loss = torch.stack(per_sample_losses).mean()
             
         if torch.isnan(loss):
             print(f"Warning: NaN loss detected at step {self.state.global_step}")
