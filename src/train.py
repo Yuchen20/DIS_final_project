@@ -45,6 +45,7 @@ class TrainConfig:
     eta_T: float = 0.99
     T: int = 15
     use_loss_coef: bool = False
+    use_lpips: bool = False
     # training mode
     use_diffusion: bool = False
     use_pix2pix: bool = False
@@ -109,15 +110,21 @@ def load_hf_checkpoint(model_path, device='cpu'):
 
 # 4. Custom Trainer overriding loss computation
 class DiffusionTrainer(Trainer):
-    def __init__(self, scheduler: DiffusionScheduler, use_loss_coef: bool = False, *args, **kwargs):
+    def __init__(self, scheduler: DiffusionScheduler, use_loss_coef: bool = False, use_lpips: bool = True, *args, **kwargs):
         self.scheduler = scheduler
         self.use_loss_coef = use_loss_coef
+        self.use_lpips = use_lpips
         self._eval_batch_counter = 0
-        # Initialize LPIPS loss (VGG backbone, on cuda:0 by default)
-        self.lpips_loss = lpips.LPIPS(net='vgg').to('cuda:0')
-        for params in self.lpips_loss.parameters():
-            params.requires_grad_(False)
-        self.lpips_loss.eval()
+        
+        # Initialize LPIPS loss only if use_lpips is True
+        if self.use_lpips:
+            self.lpips_loss = lpips.LPIPS(net='vgg').to('cuda:0')
+            for params in self.lpips_loss.parameters():
+                params.requires_grad_(False)
+            self.lpips_loss.eval()
+        else:
+            self.lpips_loss = None
+            
         super().__init__(*args, **kwargs)
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
@@ -151,18 +158,22 @@ class DiffusionTrainer(Trainer):
             # MSE loss per sample
             sample_mse = (outputs[b] - targets[b]).pow(2).mean()
             
-            # LPIPS loss per sample (average over channels)
-            sample_lpips_sum = 0.0
-            for c in range(outputs.shape[1]):
-                # LPIPS expects 3-channel or 1-channel, so repeat to 3 channels
-                out_img = outputs[b, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)  # (1,3,H,W)
-                tgt_img = targets[b, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
-                lpips_val = self.lpips_loss(out_img.to(device), tgt_img.to(device))
-                sample_lpips_sum += lpips_val
-            sample_lpips = sample_lpips_sum / outputs.shape[1]
+            # Start with MSE loss
+            sample_loss = sample_mse
             
-            # Combine MSE and LPIPS for this sample
-            sample_loss = sample_mse + sample_lpips
+            # Add LPIPS loss only if use_lpips is True
+            if self.use_lpips and self.lpips_loss is not None:
+                sample_lpips_sum = 0.0
+                for c in range(outputs.shape[1]):
+                    # LPIPS expects 3-channel or 1-channel, so repeat to 3 channels
+                    out_img = outputs[b, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)  # (1,3,H,W)
+                    tgt_img = targets[b, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
+                    lpips_val = self.lpips_loss(out_img.to(device), tgt_img.to(device))
+                    sample_lpips_sum += lpips_val
+                sample_lpips = sample_lpips_sum / outputs.shape[1]
+                
+                # Add LPIPS to the loss
+                sample_loss = sample_loss + sample_lpips
             
             # Apply loss coefficient if enabled
             if self.use_loss_coef:
@@ -980,6 +991,7 @@ def main(args=None):
         trainer = DiffusionTrainer(
             scheduler=scheduler,
             use_loss_coef=config.use_loss_coef,
+            use_lpips=config.use_lpips,
             model=model,
             args=training_args,
             train_dataset=train_dataset,
@@ -1109,6 +1121,7 @@ if __name__ == '__main__':
     parser.add_argument('--eta_T', type=float, default=None, help='Diffusion eta_T parameter')
     parser.add_argument('--T', type=int, default=None, help='Diffusion timesteps')
     parser.add_argument('--use_loss_coef', action='store_true', help='Use loss coef')
+    parser.add_argument('--use_lpips', action='store_true', help='Use LPIPS loss')
     
     # Training mode flags
     parser.add_argument('--use_diffusion', action='store_true', help='Use diffusion training')
