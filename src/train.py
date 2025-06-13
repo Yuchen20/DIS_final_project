@@ -52,7 +52,7 @@ class TrainConfig:
     use_pix2pix: bool = False
     use_consistency_distillation: bool = True
     # consistency distillation params
-    cd_ema_decay: float = 0.9990  # μ in the paper
+    cd_ema_decay: float = 0.9999  # μ in the paper
     cd_pretrained_path: str = "/rds/user/ym429/hpc-work/dissertation/results/rescell-15step-no_loss_coef-LPIPS/checkpoint-69120"  # Path to pretrained diffusion model
     cd_lambda_weight: float = 0.2  # Weight function λ(t_n)
     cd_target_reg_weight: float = 1.0  # Weight for target regularization term
@@ -649,10 +649,6 @@ class ConsistencyDistillationTrainer(Trainer):
         device = sources.device
         batch_size = sources.size(0)
         
-        # Initialize EMA model if not done
-        if self.ema_model is None:
-            self._init_ema_model()
-        
         # Sample n ~ U[1, N-1]
         t_n = torch.randint(1, self.scheduler.config.T, (batch_size,), device=device)
         t_n_1 = t_n + 1
@@ -756,6 +752,43 @@ class ConsistencyDistillationTrainer(Trainer):
             # For evaluation, use the model directly without noise
             outputs = model(sources, torch.zeros(sources.size(0), device=device), lq=sources)
             loss = (outputs - targets).pow(2).mean()
+
+            # log the mse, ssim, psnr
+            # Calculate metrics for the batch
+            try:
+                mse = (outputs - targets).pow(2).mean()
+                
+                # For SSIM and PSNR, we need to calculate per sample and then average
+                batch_ssim = []
+                batch_psnr = []
+                
+                for i in range(outputs.size(0)):  # Iterate over batch dimension
+                    sample_output = outputs[i:i+1]  # Keep batch dimension
+                    sample_target = targets[i:i+1]
+                    
+                    # Calculate SSIM for this sample
+                    sample_ssim = ssim(sample_output, sample_target, 
+                                    data_range=sample_output.max() - sample_output.min(), 
+                                    size_average=False)
+                    batch_ssim.append(sample_ssim)
+                    
+                    # Calculate PSNR for this sample
+                    sample_mse = (sample_output - sample_target).pow(2).mean()
+                    sample_psnr = 10 * torch.log10((sample_output.max() - sample_output.min())**2 / sample_mse)
+                    batch_psnr.append(sample_psnr)
+                
+                # Average across batch
+                avg_ssim = torch.stack(batch_ssim).mean()
+                avg_psnr = torch.stack(batch_psnr).mean()
+                
+                wandb.log({
+                    'val/mse': mse.item(),
+                    'val/ssim': avg_ssim.item(),
+                    'val/psnr': avg_psnr.item()
+                }, step=self._eval_batch_counter)
+            except Exception as e:
+                # do nothing
+                pass
             
             # Occasionally visualize full denoising process
             self._eval_batch_counter += 1
