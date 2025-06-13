@@ -712,9 +712,9 @@ class ConsistencyDistillationTrainer(Trainer):
     def log_images(self, source, target, noised_image, teacher_prediction, x_phi_tn, online_prediction, offline_prediction, t_n, t_n_1):
         # plot the source, target, noised_image, teacher_prediction, x_phi_tn, online_prediction, offline_prediction
         # Only take the first sample from the batch for visualization
-        fig, axes = plt.subplots(7, 5, figsize=(10, 14))
+        fig, axes = plt.subplots(5, 7, figsize=(14, 10))
 
-        for idx, (image_name, image) in enumerate([
+        images_list = [
             ('source', source[0]),  # Take first sample in batch
             ('x t_n+1', noised_image[0]),
             ('x t_n Recovered by teacher', x_phi_tn[0]),
@@ -722,12 +722,14 @@ class ConsistencyDistillationTrainer(Trainer):
             ('online_prediction', online_prediction[0]),
             ('offline_prediction', offline_prediction[0]),
             ('target', target[0]),
-        ]):
-            for i in range(5):
+        ]
+
+        for i in range(5):  # 5 channels
+            for idx, (image_name, image) in enumerate(images_list):  # 7 image types
                 # Now image has shape (5, 512, 512), so image[i] gives us (512, 512)
-                axes[idx, i].imshow(image[i].detach().cpu().numpy(), cmap='viridis')
-                axes[idx, i].set_title(f'{image_name} Ch {i+1}')
-                axes[idx, i].axis('off')
+                axes[i, idx].imshow(image[i].detach().cpu().numpy(), cmap='viridis')
+                axes[i, idx].set_title(f'{image_name} Ch {i+1}')
+                axes[i, idx].axis('off')
 
         fig.suptitle(f'Consistency Distillation Training (t_n={t_n[0]}, t_n+1={t_n_1[0]})', fontsize=16)
         plt.tight_layout()
