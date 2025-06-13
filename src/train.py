@@ -703,23 +703,25 @@ class ConsistencyDistillationTrainer(Trainer):
 
     def log_images(self, source, target, noised_image, teacher_prediction, x_phi_tn, online_prediction, offline_prediction, t_n, t_n_1):
         # plot the source, target, noised_image, teacher_prediction, x_phi_tn, online_prediction, offline_prediction
+        # Only take the first sample from the batch for visualization
         fig, axes = plt.subplots(7, 5, figsize=(10, 14))
 
         for idx, (image_name, image) in enumerate([
-            ('source', source),
-            ('x t_n+1', noised_image),
-            ('x t_n Recovered by teacher', x_phi_tn),
-            ('teacher_prediction', teacher_prediction),
-            ('online_prediction', online_prediction),
-            ('offline_prediction', offline_prediction),
-            ('target', target),
+            ('source', source[0]),  # Take first sample in batch
+            ('x t_n+1', noised_image[0]),
+            ('x t_n Recovered by teacher', x_phi_tn[0]),
+            ('teacher_prediction', teacher_prediction[0]),
+            ('online_prediction', online_prediction[0]),
+            ('offline_prediction', offline_prediction[0]),
+            ('target', target[0]),
         ]):
             for i in range(5):
-                axes[idx, i].imshow(image[i].cpu().numpy(), cmap='viridis')
+                # Now image has shape (5, 512, 512), so image[i] gives us (512, 512)
+                axes[idx, i].imshow(image[i].detach().cpu().numpy(), cmap='viridis')
                 axes[idx, i].set_title(f'{image_name} Ch {i+1}')
                 axes[idx, i].axis('off')
 
-        fig.suptitle(f'Consistency Distillation Training (t_n={t_n}, t_n+1={t_n_1})', fontsize=16)
+        fig.suptitle(f'Consistency Distillation Training (t_n={t_n[0]}, t_n+1={t_n_1[0]})', fontsize=16)
         plt.tight_layout()
         wandb.log({
             'cd_training_comparison': wandb.Image(fig),
