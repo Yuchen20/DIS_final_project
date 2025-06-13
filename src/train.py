@@ -684,7 +684,16 @@ class ConsistencyDistillationTrainer(Trainer):
 
         # compute the loss
         MSE_loss = (online_predictions - offline_predictions).pow(2).mean()
-        LPIPS_loss = self.lpips_loss(online_predictions, offline_predictions)
+        
+        # Compute LPIPS loss for each channel separately
+        LPIPS_loss = 0.0
+        for c in range(online_predictions.shape[1]):
+            # Convert single channel to 3 channels for LPIPS
+            online_channel = online_predictions[:, c:c+1].repeat(1, 3, 1, 1)
+            offline_channel = offline_predictions[:, c:c+1].repeat(1, 3, 1, 1)
+            LPIPS_loss += self.lpips_loss(online_channel, offline_channel)
+        LPIPS_loss = LPIPS_loss / online_predictions.shape[1]  # Average over channels
+        
         loss = MSE_loss + LPIPS_loss
 
         if self.state.global_step % 100 == 0:
@@ -702,9 +711,8 @@ class ConsistencyDistillationTrainer(Trainer):
             ('x t_n Recovered by teacher', x_phi_tn),
             ('teacher_prediction', teacher_prediction),
             ('online_prediction', online_prediction),
-            ('offline_prediction', offline_prediction)
+            ('offline_prediction', offline_prediction),
             ('target', target),
-
         ]):
             for i in range(5):
                 axes[idx, i].imshow(image[i].cpu().numpy(), cmap='viridis')
