@@ -1,6 +1,7 @@
 import os, sys
 import random
 import numpy as np
+import copy
 import torch
 import wandb
 import argparse
@@ -51,7 +52,7 @@ class TrainConfig:
     use_pix2pix: bool = False
     use_consistency_distillation: bool = True
     # consistency distillation params
-    cd_ema_decay: float = 0.999  # μ in the paper
+    cd_ema_decay: float = 0.9990  # μ in the paper
     cd_pretrained_path: str = "/rds/user/ym429/hpc-work/dissertation/results/rescell-15step-no_loss_coef-LPIPS/checkpoint-69120"  # Path to pretrained diffusion model
     cd_lambda_weight: float = 0.2  # Weight function λ(t_n)
     cd_target_reg_weight: float = 1.0  # Weight for target regularization term
@@ -578,8 +579,14 @@ class Pix2PixTrainer(Trainer):
 class ConsistencyDistillationTrainer(Trainer):
     """Trainer for Consistency Distillation following Algorithm 2 from the paper"""
     
-    def __init__(self, scheduler: DiffusionScheduler, ema_decay: float = 0.999, 
-                 lambda_weight: float = 1.0, target_reg_weight: float = 0.1, *args, **kwargs):
+    def __init__(
+            self, 
+            scheduler: DiffusionScheduler, 
+            ema_decay: float = 0.9999, 
+            lambda_weight: float = 1.0, 
+            target_reg_weight: float = 0.1, 
+            *args, **kwargs
+        ):
         self.scheduler = scheduler
         self.ema_decay = ema_decay
         self.lambda_weight = lambda_weight
@@ -594,39 +601,32 @@ class ConsistencyDistillationTrainer(Trainer):
         
         super().__init__(*args, **kwargs)
         
-        # Create EMA model (θ^- in the paper)
-        self.ema_model = None
-        
-    def _init_ema_model(self):
-        """Initialize EMA model as a copy of the current model"""
-        if self.ema_model is None:
-            import copy
-            self.ema_model = copy.deepcopy(self.model)
-            self.ema_model.eval()
-            for param in self.ema_model.parameters():
-                param.requires_grad_(False)
-    
-    def _update_ema_model(self):
+        # Initialize EMA model (θ^- in the paper)
+
+        self.ema_model = copy.deepcopy(self.model)
+        self.ema_model.eval()
+        for param in self.ema_model.parameters():
+            param.requires_grad_(False)
+
+        self.teacher_model = copy.deepcopy(self.model)
+        self.teacher_model.eval()
+        for param in self.teacher_model.parameters():
+            param.requires_grad_(False)
+
+
+    def _update_ema_model(self, model):
         """Update EMA model parameters: θ^- ← stopgrad(μθ^- + (1-μ)θ)"""
         with torch.no_grad():
-            for ema_param, param in zip(self.ema_model.parameters(), self.model.parameters()):
+            for ema_param, param in zip(self.ema_model.parameters(), model.parameters()):
                 ema_param.data.mul_(self.ema_decay).add_(param.data, alpha=1 - self.ema_decay)
     
-    def _ode_solver_step(self, x_tn_plus_1, t_n_plus_1, t_n, sources):
+    def _ode_solver_step(self, x_tn_plus_1, f_theta_tn_plus_1, t_n):
         """
         Compute x^φ_{t_n} using the proper diffusion step (same as inference)
         This uses the same step as in SwinUNetPredictor.predict():
         x = coef_1 * x + coef_2 * output
         """
-        device = x_tn_plus_1.device
-        batch_size = x_tn_plus_1.shape[0]
-        
-        # Create timestep tensors
-        t_n_plus_1_tensor = torch.full((batch_size,), t_n_plus_1, device=device)
-        
-        # Get model prediction at t_{n+1}
-        with torch.no_grad():
-            phi_output = self.model(x_tn_plus_1, t_n_plus_1_tensor, lq=sources)
+        t_n_plus_1 = t_n + 1
         
         # Calculate coefficients for the diffusion step (same as inference.py)
         # Going from t_{n+1} to t_n (one step back in diffusion process)
@@ -634,11 +634,11 @@ class ConsistencyDistillationTrainer(Trainer):
         coef_2 = self.scheduler.get_alpha_t(t_n_plus_1) / self.scheduler.get_eta_t(t_n_plus_1)
         
         # Ensure coefficients are on the right device
-        coef_1, coef_2 = coef_1.to(device), coef_2.to(device)
+        coef_1, coef_2 = coef_1.to(x_tn_plus_1.device), coef_2.to(x_tn_plus_1.device)
         
         # Apply the diffusion step: x^φ_{t_n} = coef_1 * x_{t_{n+1}} + coef_2 * output
         # Note: we don't add noise (coef_3 term) during training as in the paper
-        x_phi_tn = coef_1 * x_tn_plus_1 + coef_2 * phi_output
+        x_phi_tn = coef_1 * x_tn_plus_1 + coef_2 * f_theta_tn_plus_1
         
         return x_phi_tn
 
@@ -654,177 +654,71 @@ class ConsistencyDistillationTrainer(Trainer):
             self._init_ema_model()
         
         # Sample n ~ U[1, N-1]
-        n = torch.randint(1, self.scheduler.config.T, (batch_size,), device=device)
-        
-        # Compute t_n and t_{n+1}
-        total_loss = 0.0
-        
+        t_n = torch.randint(1, self.scheduler.config.T, (batch_size,), device=device)
+        t_n_1 = t_n + 1
+
+        x_t_n_1 = []
         for i in range(batch_size):
-            n_i = int(n[i].item())
-            t_n = n_i
-            t_n_plus_1 = n_i + 1
-            
-            # Sample x_{t_{n+1}} ~ N(x; t²_{n+1}I)
-            x_tn_plus_1 = self.scheduler.get_noisy_image(t_n_plus_1, targets[i], sources[i])
-            
-            # Compute x^φ_{t_n} using ODE solver
-            x_phi_tn = self._ode_solver_step(
-                x_tn_plus_1.unsqueeze(0), 
-                t_n_plus_1, 
-                t_n, 
-                sources[i].unsqueeze(0)
-            )
-            
-            # Compute f_θ(x_{t_{n+1}}, t_{n+1})
-            t_n_plus_1_tensor = torch.tensor([t_n_plus_1], device=device)
-            f_theta_tn_plus_1 = model(
-                x_tn_plus_1.unsqueeze(0), 
-                t_n_plus_1_tensor, 
-                lq=sources[i].unsqueeze(0)
-            )
-            
-            # Compute f_{θ^-}(x^φ_{t_n}, t_n) using EMA model
-            t_n_tensor = torch.tensor([t_n], device=device)
-            with torch.no_grad():
-                f_theta_minus_tn = self.ema_model(
-                    x_phi_tn, 
-                    t_n_tensor, 
-                    lq=sources[i].unsqueeze(0)
-                )
-            
-            # Compute distance d(f_θ(x_{t_{n+1}}, t_{n+1}), f_{θ^-}(x^φ_{t_n}, t_n))
-            # Using MSE + LPIPS as the distance metric
-            
-            # MSE loss (consistency term)
-            consistency_mse_loss = (f_theta_tn_plus_1 - f_theta_minus_tn).pow(2).mean()
-            
-            # LPIPS loss (consistency term - average over channels)
-            consistency_lpips_sum = 0.0
-            for c in range(f_theta_tn_plus_1.shape[1]):
-                out_img = f_theta_tn_plus_1[0, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
-                tgt_img = f_theta_minus_tn[0, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
-                lpips_val = self.lpips_loss(out_img, tgt_img)
-                consistency_lpips_sum += lpips_val
-            consistency_lpips_loss = consistency_lpips_sum / f_theta_tn_plus_1.shape[1]
-            
-            # Target regularization term: compare first prediction with target
-            target_mse_loss = (f_theta_tn_plus_1 - targets[i].unsqueeze(0)).pow(2).mean()
-            
-            # Target LPIPS loss (average over channels)
-            target_lpips_sum = 0.0
-            for c in range(f_theta_tn_plus_1.shape[1]):
-                pred_img = f_theta_tn_plus_1[0, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
-                target_img = targets[i, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
-                lpips_val = self.lpips_loss(pred_img, target_img)
-                target_lpips_sum += lpips_val
-            target_lpips_loss = target_lpips_sum / f_theta_tn_plus_1.shape[1]
-            
-            # Combine all losses
-            consistency_loss = self.lambda_weight * (consistency_mse_loss + consistency_lpips_loss)
-            target_reg_loss = self.target_reg_weight * (target_mse_loss + target_lpips_loss)
-            loss_i = consistency_loss + target_reg_loss
-            total_loss += loss_i
-        
-        # Average loss over batch
-        loss = total_loss / batch_size
-        
-        # Store loss components for logging (using first batch item as representative)
-        if batch_size > 0:
-            # Recalculate components for first item for logging purposes
-            i = 0
-            n_i = int(n[i].item())
-            t_n_plus_1 = n_i + 1
-            x_tn_plus_1 = self.scheduler.get_noisy_image(t_n_plus_1, targets[i], sources[i])
-            x_phi_tn = self._ode_solver_step(
-                x_tn_plus_1.unsqueeze(0), t_n_plus_1, n_i, sources[i].unsqueeze(0)
-            )
-            
-            t_n_plus_1_tensor = torch.tensor([t_n_plus_1], device=device)
-            f_theta_tn_plus_1 = model(
-                x_tn_plus_1.unsqueeze(0), t_n_plus_1_tensor, lq=sources[i].unsqueeze(0)
-            )
-            
-            t_n_tensor = torch.tensor([n_i], device=device)
-            with torch.no_grad():
-                f_theta_minus_tn = self.ema_model(
-                    x_phi_tn, t_n_tensor, lq=sources[i].unsqueeze(0)
-                )
-            
-            # Calculate individual loss components for logging
-            consistency_mse = (f_theta_tn_plus_1 - f_theta_minus_tn).pow(2).mean()
-            target_mse = (f_theta_tn_plus_1 - targets[i].unsqueeze(0)).pow(2).mean()
-            
-            # Store for potential logging
-            self._last_consistency_loss = consistency_mse.item()
-            self._last_target_reg_loss = target_mse.item()
-        
-        # Log images every 100 steps
-        step = self.state.global_step
-        if step and step % 100 == 0:
-            with torch.no_grad():
-                # Visualize the consistency training process
-                i = 0  # First item in batch
-                n_i = int(n[i].item())
-                t_n_plus_1 = n_i + 1
-                
-                x_tn_plus_1 = self.scheduler.get_noisy_image(t_n_plus_1, targets[i], sources[i])
-                t_n_plus_1_tensor = torch.tensor([t_n_plus_1], device=device)
-                f_theta_tn_plus_1 = model(
-                    x_tn_plus_1.unsqueeze(0), 
-                    t_n_plus_1_tensor, 
-                    lq=sources[i].unsqueeze(0)
-                )[0].detach().cpu().numpy()
-                
-                target_img = targets[i].detach().cpu().numpy()
-                x_tn_plus_1_img = x_tn_plus_1.detach().cpu().numpy()
-                
-                fig, axes = plt.subplots(3, 5, figsize=(20, 12))
-                
-                # Plot noisy input
-                for j in range(5):
-                    axes[0, j].imshow(x_tn_plus_1_img[j], cmap='viridis')
-                    axes[0, j].set_title(f'Noisy (t={t_n_plus_1}) Ch {j+1}')
-                    axes[0, j].axis('off')
-                
-                # Plot model output
-                for j in range(5):
-                    axes[1, j].imshow(f_theta_tn_plus_1[j], cmap='viridis')
-                    axes[1, j].set_title(f'Model Output Ch {j+1}')
-                    axes[1, j].axis('off')
-                
-                # Plot target
-                for j in range(5):
-                    axes[2, j].imshow(target_img[j], cmap='viridis')
-                    axes[2, j].set_title(f'Target Ch {j+1}')
-                    axes[2, j].axis('off')
-                
-                fig.suptitle(f'Consistency Distillation Training (n={n_i})', fontsize=16)
-                plt.tight_layout()
-                
-                # Enhanced logging with loss components
-                log_dict = {
-                    'cd_training_comparison': wandb.Image(fig),
-                    'cd_total_loss': loss.item(),
-                }
-                
-                # Add individual loss components if available
-                if hasattr(self, '_last_consistency_loss'):
-                    log_dict['cd_consistency_loss'] = self._last_consistency_loss
-                if hasattr(self, '_last_target_reg_loss'):
-                    log_dict['cd_target_reg_loss'] = self._last_target_reg_loss
-                
-                wandb.log(log_dict, step=step)
-                
-                plt.close(fig)
-        
-        return (loss, None) if return_outputs else loss
-    
+            x_t_n_1.append(self.scheduler.get_noisy_image(t_n_1[i], targets[i], sources[i]))
+
+        x_t_n_1 = torch.stack(x_t_n_1, dim=0)
+
+        ## Online Prediction
+        online_predictions = model(x_t_n_1, t_n_1, lq=sources)
+
+        ## Offline Prediction
+        ### Solver to get x tn with techer
+        teacher_predictions = self.teacher_model(x_t_n_1, t_n_1, lq=sources)
+        x_phi_tn = []
+        for i in range(batch_size):
+            x_phi_tn.append(self._ode_solver_step(x_t_n_1[i], teacher_predictions[i], t_n[i]))
+
+        x_phi_tn = torch.stack(x_phi_tn, dim=0)
+
+        ### Predict f_theta_tn_plus_1 with the EMA model
+        offline_predictions = self.ema_model(x_phi_tn, t_n, lq=sources)
+
+        # computer the loss
+        MSE_loss = (online_predictions - offline_predictions).pow(2).mean()
+        LPIPS_loss = self.lpips_loss(online_predictions, offline_predictions)
+        loss = MSE_loss + LPIPS_loss
+
+        if self.state.global_step % 100 == 0:
+            self.log_images(sources, targets, x_t_n_1, teacher_predictions, x_phi_tn, online_predictions, offline_predictions, t_n, t_n_1)
+
+        return loss
+
+    def log_images(self, source, target, noised_image, teacher_prediction, x_phi_tn, online_prediction, offline_prediction, t_n, t_n_1):
+        # plot the source, target, noised_image, teacher_prediction, x_phi_tn, online_prediction, offline_prediction
+        fig, axes = plt.subplots(7, 5, figsize=(10, 14))
+
+        for idx, (image_name, image) in enumerate([
+            ('source', source),
+            ('x t_n+1', noised_image),
+            ('x t_n Recovered by teacher', x_phi_tn),
+            ('teacher_prediction', teacher_prediction),
+            ('online_prediction', online_prediction),
+            ('offline_prediction', offline_prediction)
+            ('target', target),
+
+        ]):
+            for i in range(5):
+                axes[idx, i].imshow(image[i].cpu().numpy(), cmap='viridis')
+                axes[idx, i].set_title(f'{image_name} Ch {i+1}')
+                axes[idx, i].axis('off')
+
+        fig.suptitle(f'Consistency Distillation Training (t_n={t_n}, t_n+1={t_n_1})', fontsize=16)
+        plt.tight_layout()
+        wandb.log({
+            'cd_training_comparison': wandb.Image(fig),
+        }, step=self.state.global_step)
+        plt.close(fig)
+
     def training_step(self, model, inputs, num_items_in_batch=None):
         """Override training step to update EMA model after each step"""
+        self._update_ema_model(model)
+
         loss = super().training_step(model, inputs, num_items_in_batch)
-        
-        # Update EMA model after gradient step
-        self._update_ema_model()
         
         return loss
     
@@ -1048,6 +942,7 @@ def main(args=None):
             eval_dataset=eval_dataset,
             data_collator=data_collator
         )
+        
     elif config.use_pix2pix:
         # Determine GPU IDs
         gpu_ids = []
@@ -1137,7 +1032,7 @@ if __name__ == '__main__':
 
 # accelerate launch src/train.py  --output_dir /home/ym429/rds/hpc-work/dissertation/results/
 
-
+# accelerate launch src/train.py  --output_dir /rds/user/ym429/hpc-work/dissertation/results/rescell-15-step-distillation --use_consistency_distillation --cd_lambda_weight 1.0 --cd_target_reg_weight 0.0 --num_train_epochs 3 --cd_pretrained_path /rds/user/ym429/hpc-work/dissertation/results/rescell-15-step/checkpoint-69120
 
 
 ## down arrow : ssim ()
