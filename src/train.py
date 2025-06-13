@@ -691,9 +691,17 @@ class ConsistencyDistillationTrainer(Trainer):
             # Convert single channel to 3 channels for LPIPS
             online_channel = online_predictions[:, c:c+1].repeat(1, 3, 1, 1)
             offline_channel = offline_predictions[:, c:c+1].repeat(1, 3, 1, 1)
-            LPIPS_loss += self.lpips_loss(online_channel, offline_channel)
+            # Take mean to ensure scalar output
+            channel_lpips = self.lpips_loss(online_channel, offline_channel).mean()
+            LPIPS_loss += channel_lpips
         LPIPS_loss = LPIPS_loss / online_predictions.shape[1]  # Average over channels
-        
+
+        # log the mse and lpips loss
+        wandb.log({
+            'train/MSE_loss': MSE_loss.item(),
+            'train/LPIPS_loss': LPIPS_loss.item(),
+        }, step=self.state.global_step)
+
         loss = MSE_loss + LPIPS_loss
 
         if self.state.global_step % 100 == 0:
