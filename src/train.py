@@ -659,7 +659,9 @@ class ConsistencyDistillationTrainer(Trainer):
 
         x_t_n_1 = []
         for i in range(batch_size):
-            x_t_n_1.append(self.scheduler.get_noisy_image(t_n_1[i], targets[i], sources[i]))
+            # Convert tensor to integer for indexing
+            t_n_1_i = int(t_n_1[i].item())
+            x_t_n_1.append(self.scheduler.get_noisy_image(t_n_1_i, targets[i], sources[i]))
 
         x_t_n_1 = torch.stack(x_t_n_1, dim=0)
 
@@ -667,18 +669,20 @@ class ConsistencyDistillationTrainer(Trainer):
         online_predictions = model(x_t_n_1, t_n_1, lq=sources)
 
         ## Offline Prediction
-        ### Solver to get x tn with techer
+        ### Solver to get x tn with teacher
         teacher_predictions = self.teacher_model(x_t_n_1, t_n_1, lq=sources)
         x_phi_tn = []
         for i in range(batch_size):
-            x_phi_tn.append(self._ode_solver_step(x_t_n_1[i], teacher_predictions[i], t_n[i]))
+            # Convert tensor to integer for indexing
+            t_n_i = int(t_n[i].item())
+            x_phi_tn.append(self._ode_solver_step(x_t_n_1[i], teacher_predictions[i], t_n_i))
 
         x_phi_tn = torch.stack(x_phi_tn, dim=0)
 
         ### Predict f_theta_tn_plus_1 with the EMA model
         offline_predictions = self.ema_model(x_phi_tn, t_n, lq=sources)
 
-        # computer the loss
+        # compute the loss
         MSE_loss = (online_predictions - offline_predictions).pow(2).mean()
         LPIPS_loss = self.lpips_loss(online_predictions, offline_predictions)
         loss = MSE_loss + LPIPS_loss
