@@ -365,7 +365,7 @@ def parse_args():
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to run inference on')
     return parser.parse_args()
 
-def calculate_metrics(pred, target):
+def calculate_metrics(pred, target, step = None):
     """Calculate MSE, SSIM, and PSNR for each channel"""
     metrics = {
         'mse': [],
@@ -407,6 +407,19 @@ def calculate_metrics(pred, target):
         metrics['mse_255'].append(mse_255)
         metrics['ssim_255'].append(ssim_255)
         metrics['psnr_255'].append(psnr_255)
+
+    # log it to wandb
+    if step is not None:    
+        wandb.log({
+            'mse': np.mean(metrics['mse']),
+            'ssim': np.mean(metrics['ssim']),
+            'psnr': np.mean(metrics['psnr']),
+            'mse_255': np.mean(metrics['mse_255']),
+            'ssim_255': np.mean(metrics['ssim_255']),
+            'psnr_255': np.mean(metrics['psnr_255']),
+        }, step = step)
+
+
 
     
     return metrics
@@ -506,7 +519,10 @@ def main():
         # Process each image in the batch
         for i in range(output.shape[0]):
             # Calculate metrics for this image
-            metrics = calculate_metrics(output[i], target[i])
+            if i == 0:
+                metrics = calculate_metrics(output[i], target[i], batch_idx)
+            else:
+                metrics = calculate_metrics(output[i], target[i])
             
             # Save metrics for each channel
             for ch_idx in range(5):  # 5 channels for swin_unet and pix2pix
