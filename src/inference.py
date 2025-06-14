@@ -1,4 +1,5 @@
 import os, sys
+from setuptools import sic
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -195,7 +196,7 @@ class SwinUNetPredictor(BasePredictor):
         return model
 
     def predict(self, sources):
-        config = CFG(kappa=2.0, p=0.3, eta_T=0.99, T=15)
+        config = CFG(kappa=2.0, p=0.3, eta_T=0.99, T=2)
         scheduler = DiffusionScheduler(config)
 
         # Initialize x with noisy image
@@ -220,6 +221,9 @@ class SwinUNetPredictor(BasePredictor):
                 coef_1, coef_2, coef_3 = coef_1.to(self.device), coef_2.to(self.device), coef_3.to(self.device)
 
                 x = coef_1 * x + coef_2 * output# + coef_3 * torch.randn_like(x, device=self.device)
+                if t == 1:
+                    x = output
+
                 intermediate_results.append(
                     (x.detach().cpu().numpy(), output.detach().cpu().numpy())
                 )
@@ -510,6 +514,8 @@ def main():
 if __name__ == '__main__':
     main() 
 
+# python /home/ym429/project/final_project/sic/inference.py --model_path /rds/user/ym429/hpc-work/dissertation/results/rescell-15-step-distillation-combined/checkpoint-6912 --model_type swin_unet --output_dir /rds/user/ym429/hpc-work/dissertation/inference_results/rescell-15-step-distillation-combined
+# 
 
 # To run the script:
 ## For UNet:

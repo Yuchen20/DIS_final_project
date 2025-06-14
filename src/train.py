@@ -21,7 +21,8 @@ import lpips
 from safetensors.torch import load_file as load_safetensors
 from collections import OrderedDict
 
-
+from skimage.metrics import structural_similarity as ssim
+from skimage.metrics import peak_signal_noise_ratio as psnr
 # 1. Configuration
 @dataclass
 class TrainConfig:
@@ -758,34 +759,56 @@ class ConsistencyDistillationTrainer(Trainer):
             try:
                 mse = (outputs - targets).pow(2).mean()
                 
-                # For SSIM and PSNR, we need to calculate per sample and then average
-                batch_ssim = []
-                batch_psnr = []
+                # Convert tensors to numpy for SSIM and PSNR calculation
+                outputs_np = outputs.detach().cpu().numpy()
+                targets_np = targets.detach().cpu().numpy()
                 
-                for i in range(outputs.size(0)):  # Iterate over batch dimension
-                    sample_output = outputs[i:i+1]  # Keep batch dimension
-                    sample_target = targets[i:i+1]
-                    
-                    # Calculate SSIM for this sample
-                    sample_ssim = ssim(sample_output, sample_target, 
-                                    data_range=sample_output.max() - sample_output.min(), 
-                                    size_average=False)
-                    batch_ssim.append(sample_ssim)
-                    
-                    # Calculate PSNR for this sample
-                    sample_mse = (sample_output - sample_target).pow(2).mean()
-                    sample_psnr = 10 * torch.log10((sample_output.max() - sample_output.min())**2 / sample_mse)
-                    batch_psnr.append(sample_psnr)
+                # Initialize metric lists for each channel
+                channel_metrics = {
+                    'ssim': [[] for _ in range(outputs_np.shape[1])],  # 5 channels
+                    'psnr': [[] for _ in range(outputs_np.shape[1])]
+                }
                 
-                # Average across batch
-                avg_ssim = torch.stack(batch_ssim).mean()
-                avg_psnr = torch.stack(batch_psnr).mean()
+                # Calculate metrics per sample and per channel
+                for batch_idx in range(outputs_np.shape[0]):  # Iterate over batch
+                    for channel_idx in range(outputs_np.shape[1]):  # Iterate over channels
+                        pred_channel = outputs_np[batch_idx, channel_idx]
+                        target_channel = targets_np[batch_idx, channel_idx]
+                        
+                        # Normalize to 0-1 range
+                        pred_norm = (pred_channel - pred_channel.min()) / (pred_channel.max() - pred_channel.min())
+                        target_norm = (target_channel - target_channel.min()) / (target_channel.max() - target_channel.min())
+                        
+                        # Calculate SSIM
+                        ssim_val = ssim(pred_norm, target_norm, data_range=1.0)
+                        channel_metrics['ssim'][channel_idx].append(ssim_val)
+                        
+                        # Calculate PSNR
+                        psnr_val = psnr(target_norm, pred_norm, data_range=1.0)
+                        channel_metrics['psnr'][channel_idx].append(psnr_val)
                 
-                wandb.log({
+                # Calculate average metrics per channel across batch
+                avg_ssim_per_channel = [np.mean(channel_metrics['ssim'][i]) for i in range(outputs_np.shape[1])]
+                avg_psnr_per_channel = [np.mean(channel_metrics['psnr'][i]) for i in range(outputs_np.shape[1])]
+                
+                # Overall averages across all channels
+                overall_avg_ssim = np.mean(avg_ssim_per_channel)
+                overall_avg_psnr = np.mean(avg_psnr_per_channel)
+                
+                # Log metrics
+                log_dict = {
                     'val/mse': mse.item(),
-                    'val/ssim': avg_ssim.item(),
-                    'val/psnr': avg_psnr.item()
-                }, step=self._eval_batch_counter)
+                    'val/ssim_overall': overall_avg_ssim,
+                    'val/psnr_overall': overall_avg_psnr
+                }
+                
+                # Log per-channel metrics
+                for i in range(len(avg_ssim_per_channel)):
+                    log_dict[f'val/ssim_ch{i+1}'] = avg_ssim_per_channel[i]
+                    log_dict[f'val/psnr_ch{i+1}'] = avg_psnr_per_channel[i]
+                
+                wandb.log(log_dict, step=self._eval_batch_counter)
+                
             except Exception as e:
                 # do nothing
                 pass
@@ -798,13 +821,17 @@ class ConsistencyDistillationTrainer(Trainer):
                 target = targets[0].unsqueeze(0)
                 
                 # Start from pure noise
-                x = torch.randn_like(target, device=device)
+                one_step_scheduler = DiffusionScheduler(CFG(2.0, 0.3, 0.99, 2))
+
+                t = torch.tensor([1], device=device)
+
+                # get the noised image
+                x_t_n_1 = one_step_scheduler.get_noisy_image(t, source, source)
                 
                 # Single-step denoising (consistency model property)
-                t = torch.tensor([1], device=device)
-                denoised = model(x, t, lq=source)
+                denoised = model(x_t_n_1, t, lq=source)
                 
-                fig, axes = plt.subplots(2, 5, figsize=(20, 8))
+                fig, axes = plt.subplots(3, 5, figsize=(10, 6))
                 
                 # Plot source
                 for j in range(5):
@@ -817,6 +844,12 @@ class ConsistencyDistillationTrainer(Trainer):
                     axes[1, j].imshow(denoised[0, j].cpu().numpy(), cmap='viridis')
                     axes[1, j].set_title(f'Denoised Ch {j+1}')
                     axes[1, j].axis('off')
+
+                for j in range(5):
+                    axes[2, j].imshow(x_t_n_1[0, j].cpu().numpy(), cmap='viridis')
+                    axes[2, j].set_title(f'Noised Ch {j+1}')
+                    axes[2, j].axis('off')
+
                 
                 plt.tight_layout()
                 
