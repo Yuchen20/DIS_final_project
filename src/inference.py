@@ -197,6 +197,7 @@ class SwinUNetPredictor(BasePredictor):
 
     def predict(self, sources):
         config = CFG(kappa=2.0, p=0.3, eta_T=0.99, T=15)
+        ONE_STEP = True
         scheduler = DiffusionScheduler(config)
 
         # Initialize x with noisy image
@@ -214,6 +215,14 @@ class SwinUNetPredictor(BasePredictor):
                 # Create a batch of timesteps
                 timesteps = torch.full((batch_size,), t, device=self.device)
                 output = self.model(x, timesteps, lq = sources)
+
+                if ONE_STEP:
+                    x = output
+                    intermediate_results.append(
+                        (x.detach().cpu().numpy(), output.detach().cpu().numpy())
+                    )
+                    break
+
                 coef_1 = scheduler.get_eta_t(t - 1) / scheduler.get_eta_t(t)
                 coef_2 = scheduler.get_alpha_t(t) / scheduler.get_eta_t(t)
                 coef_3 = config.kappa * scheduler.get_eta_t(t - 1) / scheduler.get_eta_t(t) * scheduler.get_alpha_t(t)
@@ -221,8 +230,6 @@ class SwinUNetPredictor(BasePredictor):
                 coef_1, coef_2, coef_3 = coef_1.to(self.device), coef_2.to(self.device), coef_3.to(self.device)
 
                 x = coef_1 * x + coef_2 * output# + coef_3 * torch.randn_like(x, device=self.device)
-                if t == 1:
-                    x = output
 
                 intermediate_results.append(
                     (x.detach().cpu().numpy(), output.detach().cpu().numpy())
