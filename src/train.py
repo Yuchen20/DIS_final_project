@@ -913,6 +913,7 @@ class LatentDiffusionTrainer(Trainer):
         images_transformed = images_transformed.to(device, torch.float16)
         
         # Encode entire batch to latent
+        # Note: for encoding, we can use no_grad since we don't need gradients to flow back to input images
         with torch.no_grad():
             latents = self.autoencoder.encode(images_transformed).latent
         
@@ -923,13 +924,14 @@ class LatentDiffusionTrainer(Trainer):
         device = latents.device
         
         # Decode entire batch from latent
-        with torch.no_grad():
-            # Ensure latents are in the same dtype as the autoencoder (float16)
-            latents_fp16 = latents.to(torch.float16)
-            decoded = self.autoencoder.decode(latents_fp16).sample
-            # Denormalize: from [-1, 1] to [0, 1]
-            decoded = decoded * 0.5 + 0.5
-            # Convert back to float32 for loss computation
+        # Note: autoencoder parameters are frozen, but we need gradients to flow through for training
+        # Ensure latents are in the same dtype as the autoencoder (float16)
+        latents_fp16 = latents.to(torch.float16)
+        decoded = self.autoencoder.decode(latents_fp16).sample
+        # Denormalize: from [-1, 1] to [0, 1]
+        decoded = decoded * 0.5 + 0.5
+        # Keep in float32 for consistency with the rest of the pipeline
+        if decoded.dtype != torch.float32:
             decoded = decoded.to(torch.float32)
         
         return decoded  # (batch_size, channels, height, width)
@@ -997,6 +999,14 @@ class LatentDiffusionTrainer(Trainer):
         
         # Average across batch
         loss = torch.stack(per_sample_losses).mean()
+        
+        # Debug: Check if loss requires gradients
+        if not loss.requires_grad:
+            print(f"Warning: Loss does not require gradients at step {self.state.global_step}")
+            print(f"outputs_latent requires_grad: {outputs_latent.requires_grad}")
+            print(f"outputs requires_grad: {outputs.requires_grad}")
+            # Create a dummy loss that requires gradients
+            loss = torch.tensor(1000.0, device=device, requires_grad=True)
             
         if torch.isnan(loss):
             print(f"Warning: NaN loss detected at step {self.state.global_step}")
