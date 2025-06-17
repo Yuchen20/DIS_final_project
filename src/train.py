@@ -20,6 +20,8 @@ from pix2pix_improved import ImprovedPix2PixModel
 import lpips
 from safetensors.torch import load_file as load_safetensors
 from collections import OrderedDict
+from diffusers import AutoencoderDC
+import torchvision.transforms as transforms
 
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import peak_signal_noise_ratio as psnr
@@ -52,6 +54,7 @@ class TrainConfig:
     use_diffusion: bool = False
     use_pix2pix: bool = False
     use_consistency_distillation: bool = True
+    use_latent_diffusion: bool = False  # New flag for latent diffusion
     # consistency distillation params
     cd_ema_decay: float = 0.9999  # μ in the paper
     cd_pretrained_path: str = "/rds/user/ym429/hpc-work/dissertation/results/rescell-15step-no_loss_coef-LPIPS/checkpoint-69120"  # Path to pretrained diffusion model
@@ -862,6 +865,288 @@ class ConsistencyDistillationTrainer(Trainer):
         
         return (loss, None, None)
 
+class LatentDiffusionTrainer(Trainer):
+    """Trainer for Latent Diffusion using AutoencoderDC"""
+    
+    def __init__(self, scheduler: DiffusionScheduler, use_loss_coef: bool = False, use_lpips: bool = True, *args, **kwargs):
+        self.scheduler = scheduler
+        self.use_loss_coef = use_loss_coef
+        self.use_lpips = use_lpips
+        self._eval_batch_counter = 0
+        
+        # Initialize AutoencoderDC and freeze it
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.autoencoder = AutoencoderDC.from_pretrained(
+            "mit-han-lab/dc-ae-f32c32-sana-1.1-diffusers", 
+            torch_dtype=torch.float16
+        ).to(device).eval()
+        
+        # Freeze autoencoder parameters
+        for param in self.autoencoder.parameters():
+            param.requires_grad_(False)
+        
+        # Transform for autoencoder (expects normalized input)
+        self.transform = transforms.Compose([
+            transforms.Normalize(0.5, 0.5),
+        ])
+        
+        # Initialize LPIPS loss only if use_lpips is True
+        if self.use_lpips:
+            self.lpips_loss = lpips.LPIPS(net='vgg').to(device)
+            for params in self.lpips_loss.parameters():
+                params.requires_grad_(False)
+            self.lpips_loss.eval()
+        else:
+            self.lpips_loss = None
+            
+        super().__init__(*args, **kwargs)
+
+    def encode_to_latent(self, images):
+        """Encode images to latent space using AutoencoderDC"""
+        device = images.device
+        
+        # Apply transform to entire batch
+        # Convert from (B, C, H, W) to (B, H, W, C) for transform, then back
+        images_hwc = images.permute(0, 2, 3, 1)  # (B, H, W, C)
+        images_transformed = self.transform(images_hwc)  # Apply normalization
+        images_transformed = images_transformed.permute(0, 3, 1, 2)  # Back to (B, C, H, W)
+        images_transformed = images_transformed.to(device, torch.float16)
+        
+        # Encode entire batch to latent
+        with torch.no_grad():
+            latents = self.autoencoder.encode(images_transformed).latent
+        
+        return latents  # (batch_size, latent_channels, latent_height, latent_width)
+
+    def decode_from_latent(self, latents):
+        """Decode latents back to image space using AutoencoderDC"""
+        device = latents.device
+        
+        # Decode entire batch from latent
+        with torch.no_grad():
+            decoded = self.autoencoder.decode(latents).sample
+            # Denormalize: from [-1, 1] to [0, 1]
+            decoded = decoded * 0.5 + 0.5
+        
+        return decoded  # (batch_size, channels, height, width)
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        sources = inputs['source']
+        targets = inputs['target']
+        device = sources.device
+        batch_size = sources.size(0)
+        
+        # Encode sources and targets to latent space
+        sources_latent = self.encode_to_latent(sources)
+        targets_latent = self.encode_to_latent(targets)
+        
+        # Sample random t for each example
+        ts = torch.randint(1, self.scheduler.config.T + 1, (batch_size,), device=device)
+        
+        # Generate noisy latents and coefs
+        noisy_latents = []
+        coefs = []
+        for i, t in enumerate(ts):
+            noisy_latent = self.scheduler.get_noisy_image(int(t.item()), targets_latent[i], sources_latent[i])
+            noisy_latents.append(noisy_latent)
+            coef = self.scheduler.get_loss_coef(int(t.item()))
+            coefs.append(coef.to(device))
+        
+        noisy_latents = torch.stack(noisy_latents)
+        coefs = torch.stack(coefs).view(batch_size, 1, 1, 1)
+
+        # Forward pass in latent space
+        outputs_latent = model(noisy_latents, ts, lq=sources_latent.to(device))
+
+        # Decode outputs back to image space for loss computation
+        outputs = self.decode_from_latent(outputs_latent)
+        
+        # Compute per-sample losses in image space
+        per_sample_losses = []
+        
+        for b in range(batch_size):
+            # MSE loss per sample
+            sample_mse = (outputs[b] - targets[b]).pow(2).mean()
+            
+            # Start with MSE loss
+            sample_loss = sample_mse
+            
+            # Add LPIPS loss only if use_lpips is True
+            if self.use_lpips and self.lpips_loss is not None:
+                sample_lpips_sum = 0.0
+                for c in range(outputs.shape[1]):
+                    # LPIPS expects 3-channel, so repeat to 3 channels
+                    out_img = outputs[b, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)  # (1,3,H,W)
+                    tgt_img = targets[b, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
+                    lpips_val = self.lpips_loss(out_img.to(device), tgt_img.to(device))
+                    sample_lpips_sum += lpips_val
+                sample_lpips = sample_lpips_sum / outputs.shape[1]
+                
+                # Add LPIPS to the loss
+                sample_loss = sample_loss + sample_lpips
+            
+            # Apply loss coefficient if enabled
+            if self.use_loss_coef:
+                sample_loss = sample_loss * coefs[b].squeeze()
+            
+            per_sample_losses.append(sample_loss)
+        
+        # Average across batch
+        loss = torch.stack(per_sample_losses).mean()
+            
+        if torch.isnan(loss):
+            print(f"Warning: NaN loss detected at step {self.state.global_step}")
+            loss = torch.tensor(1000.0, device=device, requires_grad=True)
+    
+        # Log images every 200 steps
+        step = self.state.global_step
+        if step and step % 20 == 0:
+            # Get first item in batch
+            noisy_img = noisy_latents[0].detach().cpu().numpy()  # Latent space
+            denoised_img = outputs[0].detach().cpu().numpy()    # Image space
+            target_img = targets[0].detach().cpu().numpy()      # Image space
+            source_img = sources[0].detach().cpu().numpy()      # Image space
+            
+            # Create figure with 4 rows and 3 columns (for 3 channels)
+            fig, axes = plt.subplots(4, 3, figsize=(9, 12))
+            
+            # Plot source channels
+            for i in range(3):
+                axes[0, i].imshow(source_img[i], cmap='viridis')
+                axes[0, i].set_title(f'Source Channel {i+1}')
+                axes[0, i].axis('off')
+            
+            # Plot some latent channels (first 3 of 32)
+            for i in range(3):
+                axes[1, i].imshow(noisy_img[i], cmap='viridis')
+                axes[1, i].set_title(f'Noisy Latent Ch {i+1}')
+                axes[1, i].axis('off')
+            
+            # Plot denoised channels
+            for i in range(3):
+                axes[2, i].imshow(denoised_img[i], cmap='viridis')
+                axes[2, i].set_title(f'Denoised Channel {i+1}')
+                axes[2, i].axis('off')
+            
+            # Plot target channels
+            for i in range(3):
+                axes[3, i].imshow(target_img[i], cmap='viridis')
+                axes[3, i].set_title(f'Target Channel {i+1}')
+                axes[3, i].axis('off')
+
+            fig.suptitle(f'Latent Diffusion - Timestep: {ts[0]}', fontsize=16)
+            plt.tight_layout()
+            
+            # Log to wandb
+            wandb.log({
+                'latent_channel_comparison': wandb.Image(fig),
+                'loss': loss.item()
+            }, step=step)
+            
+            plt.close(fig)
+
+        return (loss, outputs) if return_outputs else loss
+
+    def prediction_step(self, model, inputs, *args, **kwargs):
+        """Override prediction step to handle latent space diffusion process"""
+        sources = inputs['source']
+        targets = inputs['target']
+        device = sources.device
+        batch_size = sources.size(0)
+        
+        with torch.no_grad():
+            # Encode to latent space
+            sources_latent = self.encode_to_latent(sources)
+            targets_latent = self.encode_to_latent(targets)
+            
+            # For validation, use a fixed timestep
+            t = torch.full((batch_size,), self.scheduler.config.T // 2, device=device)
+            
+            # Generate noisy latents
+            noisy_latents = []
+            for i in range(batch_size):
+                noisy_latent = self.scheduler.get_noisy_image(int(t[i].item()), targets_latent[i], sources_latent[i])
+                noisy_latents.append(noisy_latent)
+            noisy_latents = torch.stack(noisy_latents)
+            
+            # Get model predictions in latent space
+            outputs_latent = model(noisy_latents, t, lq=sources_latent.to(device))
+            
+            # Decode back to image space
+            outputs = self.decode_from_latent(outputs_latent)
+            
+            # Compute loss in image space
+            loss = ((outputs - targets).pow(2)).mean()
+
+            # Occasionally do full diffusion process
+            self._eval_batch_counter += 1
+            if self._eval_batch_counter % 100 == 1:
+                # Only take the first image in the batch
+                source_single = sources[0].to(device).unsqueeze(0)
+                target_single = targets[0].to(device).unsqueeze(0)
+                
+                # Encode to latent space
+                source_latent = self.encode_to_latent(source_single)
+                
+                # Start from noisy latent
+                x_latent = self.scheduler.get_noisy_image(self.scheduler.config.T, source_latent, source_latent)
+                x_latent = x_latent.to(device)
+                batch_size_single = x_latent.shape[0]
+
+                intermediate_results = []
+                for t in range(self.scheduler.config.T, 0, -1):
+                    timesteps = torch.full((batch_size_single,), t, device=device)
+                    output_latent = self.model(x_latent, timesteps, lq=source_latent)
+                    
+                    # Apply diffusion step in latent space
+                    coef_1 = self.scheduler.get_eta_t(t - 1) / self.scheduler.get_eta_t(t)
+                    coef_2 = self.scheduler.get_alpha_t(t) / self.scheduler.get_eta_t(t)
+                    coef_3 = self.scheduler.config.kappa * self.scheduler.get_eta_t(t - 1) / self.scheduler.get_eta_t(t) * self.scheduler.get_alpha_t(t)
+
+                    coef_1, coef_2, coef_3 = coef_1.to(device), coef_2.to(device), coef_3.to(device)
+                    x_latent = coef_1 * x_latent + coef_2 * output_latent + coef_3 * torch.randn_like(x_latent, device=device)
+
+                    # Decode current state to image space for visualization
+                    x_decoded = self.decode_from_latent(x_latent)
+                    output_decoded = self.decode_from_latent(output_latent)
+                    
+                    intermediate_results.append(
+                        (x_decoded.detach().cpu().numpy(), output_decoded.detach().cpu().numpy())
+                    )
+                
+                # Create visualization
+                n_steps = len(intermediate_results)
+                fig, axes = plt.subplots(6, n_steps + 1, figsize=(2.2*n_steps, 12))
+                
+                for j in range(6):
+                    for i, (x, output) in enumerate(intermediate_results):
+                        x_img = x[0]  # Shape: (3, 512, 512)
+                        output_img = output[0]  # Shape: (3, 512, 512)
+                        target_img = target_single[0].detach().cpu().numpy()  # Shape: (3, 512, 512)
+                        
+                        if j < 3:
+                            axes[j, i].imshow(x_img[j], cmap='viridis')
+                        else:
+                            axes[j, i].imshow(output_img[j-3], cmap='viridis')
+                        axes[j, i].axis('off')
+
+                    # Target image
+                    axes[j, n_steps].imshow(target_img[j % 3], cmap='viridis')
+                    axes[j, n_steps].axis('off')
+                
+                plt.tight_layout()
+                
+                # Log diffusion process to wandb
+                val_step = self._eval_batch_counter
+                wandb.log({
+                    'val/latent_diffusion_process': wandb.Image(fig),
+                    'val_step': val_step,
+                })
+                
+                plt.close(fig)
+            
+        return (loss, None, None)
+
 # 5. Main training function
 def main(args=None):
     # Start with default config
@@ -874,7 +1159,7 @@ def main(args=None):
             if hasattr(config, key):
                 # For boolean flags with action='store_true', they will be False by default
                 # and True if the flag is provided
-                if key in ['use_diffusion', 'use_pix2pix', 'use_consistency_distillation', 'load_best_model_at_end', 'fp16']:
+                if key in ['use_diffusion', 'use_pix2pix', 'use_consistency_distillation', 'use_latent_diffusion', 'load_best_model_at_end', 'fp16']:
                     setattr(config, key, value)
                 elif value is not None:  # For other arguments, only override if explicitly provided
                     setattr(config, key, value)
@@ -895,8 +1180,13 @@ def main(args=None):
     print(config)
 
     # Data loading setup (from data_processing.ipynb guide)
-    source_channels = [7, 7, 7, 7, 7]
-    target_channels = [1, 2, 3, 4, 5]
+    if config.use_latent_diffusion:
+        # Use 3 channels for latent diffusion: source=[7,7,7], target=[1,2,5]
+        source_channels = [7, 7, 7]
+        target_channels = [1, 2, 5]
+    else:
+        source_channels = [7, 7, 7, 7, 7]
+        target_channels = [1, 2, 3, 4, 5]
     num_workers = min(24, os.cpu_count() // 2)  # Limit workers to 24 or less
 
     # Define plate identifiers
@@ -945,7 +1235,44 @@ def main(args=None):
         save_total_limit=2,
     )
 
-    if config.use_diffusion:
+    if config.use_latent_diffusion:
+        # For latent diffusion: 32 channels, 16x16 spatial resolution
+        model = UNetModelSwin(
+            image_size=16,  # Latent spatial size
+            in_channels=32,  # Latent channels for noisy image
+            model_channels=160,
+            out_channels=32,  # Latent channels for output
+            attention_resolutions=[16, 8, 4, 2],  # As requested
+            dropout=0,
+            channel_mult=[1, 2, 2, 4],
+            num_res_blocks=[2, 2, 2, 2],
+            conv_resample=True,
+            dims=2,
+            use_fp16=False,
+            num_heads=1,
+            num_head_channels=32,
+            use_scale_shift_norm=True,
+            resblock_updown=False,
+            swin_depth=2,
+            swin_embed_dim=192,
+            window_size=8,
+            mlp_ratio=4,
+            cond_lq=True,
+            lq_size=16  # Latent condition size
+        )
+        print(f"using latent diffusion with swin unet (32 channels, 16x16)")
+        scheduler = DiffusionScheduler(CFG(config.kappa, config.p, config.eta_T, config.T))
+        trainer = LatentDiffusionTrainer(
+            scheduler=scheduler,
+            use_loss_coef=config.use_loss_coef,
+            use_lpips=config.use_lpips,
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            data_collator=data_collator
+        )
+    elif config.use_diffusion:
 
         model = UNetModelSwin(
             image_size=512,
@@ -1112,6 +1439,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_diffusion', action='store_true', help='Use diffusion training')
     parser.add_argument('--use_pix2pix', action='store_true', help='Use pix2pix training')
     parser.add_argument('--use_consistency_distillation', action='store_true', help='Use consistency distillation training')
+    parser.add_argument('--use_latent_diffusion', action='store_true', help='Use latent diffusion training with AutoencoderDC')
     parser.add_argument('--cd_ema_decay', type=float, default=None, help='Consistency distillation ema decay')
     parser.add_argument('--cd_pretrained_path', type=str, default=None, help='Consistency distillation pretrained path')
     parser.add_argument('--cd_lambda_weight', type=float, default=None, help='Consistency distillation lambda weight')
@@ -1119,6 +1447,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     main(args)
+
+    # accelerate launch src/train.py --output_dir /rds/user/ym429/hpc-work/dissertation/results/rescell-15-step-latent-125 --use_latent_diffusion
 
 # accelerate launch src/train.py  --output_dir /home/ym429/rds/hpc-work/dissertation/results/
 
