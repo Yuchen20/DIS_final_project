@@ -13,6 +13,7 @@ from noise_scheduling import CFG, DiffusionScheduler
 import segmentation_models_pytorch as smp
 import matplotlib.pyplot as plt
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../models')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))  # Add project root to path
 from plain_unet import UNet
 from unet import UNetModelSwin
 from pix2pix import Pix2PixModel
