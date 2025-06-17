@@ -21,7 +21,7 @@ from pix2pix_improved import ImprovedPix2PixModel
 import lpips
 from safetensors.torch import load_file as load_safetensors
 from collections import OrderedDict
-from ldm.models.autoencoder import VQModelTorch
+from diffusers import AutoencoderKL
 import torchvision.transforms as transforms
 
 from skimage.metrics import structural_similarity as ssim
@@ -867,7 +867,7 @@ class ConsistencyDistillationTrainer(Trainer):
         return (loss, None, None)
 
 class LatentDiffusionTrainer(Trainer):
-    """Trainer for Latent Diffusion using AutoencoderDC"""
+    """Trainer for Latent Diffusion using Stable Diffusion VAE"""
     
     def __init__(self, scheduler: DiffusionScheduler, use_loss_coef: bool = False, use_lpips: bool = True, *args, **kwargs):
         self.scheduler = scheduler
@@ -875,52 +875,22 @@ class LatentDiffusionTrainer(Trainer):
         self.use_lpips = use_lpips
         self._eval_batch_counter = 0
         
-        # Initialize VQModelTorch and freeze it
+        # Initialize Stable Diffusion VAE and freeze it
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # VQ autoencoder configuration from the config file
-        ddconfig = {
-            "double_z": False,
-            "z_channels": 3,
-            "resolution": 512,
-            "in_channels": 5,
-            "out_ch": 5,
-            "ch": 128,
-            "ch_mult": [1, 2, 4],
-            "num_res_blocks": 2,
-            "attn_resolutions": [],
-            "dropout": 0.0,
-            "padding_mode": "zeros"
-        }
-        
-        self.autoencoder = VQModelTorch(
-            ddconfig=ddconfig,
-            n_embed=8192,
-            embed_dim=3,
-            remap=None,
-            sane_index_shape=False
+        # Load pretrained Stable Diffusion VAE
+        self.autoencoder = AutoencoderKL.from_pretrained(
+            "stabilityai/sd-vae-ft-mse", 
+            torch_dtype=torch.float32
         ).to(device).eval()
         
-        # Load checkpoint
-        ckpt_path = "/rds/user/ym429/hpc-work/dissertation/Model/model_400000.pth"
-        ckpt = torch.load(ckpt_path, map_location=device)
-        if 'state_dict' in ckpt:
-            state_dict = ckpt['state_dict']
-        else:
-            state_dict = ckpt
-        
-        # Remove any 'loss' related keys if they exist
-        keys_to_remove = [key for key in state_dict.keys() if 'loss' in key]
-        for key in keys_to_remove:
-            del state_dict[key]
-        
-        self.autoencoder.load_state_dict(state_dict)
+        print(f"Successfully loaded Stable Diffusion VAE")
         
         # Freeze autoencoder parameters
         for param in self.autoencoder.parameters():
             param.requires_grad_(False)
         
-        # Transform for autoencoder (expects normalized input)
+        # Transform for autoencoder (expects normalized input [-1, 1])
         self.transform = transforms.Compose([
             transforms.Normalize(0.5, 0.5),
         ])
@@ -937,39 +907,38 @@ class LatentDiffusionTrainer(Trainer):
         super().__init__(*args, **kwargs)
 
     def encode_to_latent(self, images):
-        """Encode images to latent space using VQModelTorch"""
+        """Encode images to latent space using Stable Diffusion VAE"""
         device = images.device
         
         # Apply transform to entire batch
         # Convert from (B, C, H, W) to (B, H, W, C) for transform, then back
         images_hwc = images.permute(0, 2, 3, 1)  # (B, H, W, C)
-        images_transformed = self.transform(images_hwc)  # Apply normalization
+        images_transformed = self.transform(images_hwc)  # Apply normalization to [-1, 1]
         images_transformed = images_transformed.permute(0, 3, 1, 2)  # Back to (B, C, H, W)
         images_transformed = images_transformed.to(device, torch.float32)
         
         # Encode entire batch to latent
         # Note: for encoding, we can use no_grad since we don't need gradients to flow back to input images
         with torch.no_grad():
-            latents = self.autoencoder.encode(images_transformed)  # VQ model returns tensor directly
+            latents = self.autoencoder.encode(images_transformed).latent_dist.sample()
         
-        return latents  # (batch_size, latent_channels, latent_height, latent_width)
+        return latents  # (batch_size, 4, height//8, width//8) for SD VAE
 
     def decode_from_latent(self, latents):
-        """Decode latents back to image space using VQModelTorch"""
+        """Decode latents back to image space using Stable Diffusion VAE"""
         device = latents.device
         
         # Decode entire batch from latent
         # Note: autoencoder parameters are frozen, but we need gradients to flow through for training
-        # VQ model expects float32
         latents_fp32 = latents.to(torch.float32)
-        decoded = self.autoencoder.decode(latents_fp32)  # VQ model returns tensor directly
+        decoded = self.autoencoder.decode(latents_fp32).sample  # SD VAE returns .sample
         # Denormalize: from [-1, 1] to [0, 1]
         decoded = decoded * 0.5 + 0.5
         # Keep in float32 for consistency with the rest of the pipeline
         if decoded.dtype != torch.float32:
             decoded = decoded.to(torch.float32)
         
-        return decoded  # (batch_size, channels, height, width)
+        return decoded  # (batch_size, 3, height, width) for SD VAE
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         sources = inputs['source']
@@ -1014,17 +983,23 @@ class LatentDiffusionTrainer(Trainer):
             
             # Add LPIPS loss only if use_lpips is True
             if self.use_lpips and self.lpips_loss is not None:
-                sample_lpips_sum = 0.0
-                for c in range(outputs.shape[1]):
-                    # LPIPS expects 3-channel, so repeat to 3 channels
-                    out_img = outputs[b, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)  # (1,3,H,W)
-                    tgt_img = targets[b, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
-                    lpips_val = self.lpips_loss(out_img.to(device), tgt_img.to(device))
-                    sample_lpips_sum += lpips_val
-                sample_lpips = sample_lpips_sum / outputs.shape[1]
-                
-                # Add LPIPS to the loss
-                sample_loss = sample_loss + sample_lpips
+                # For 3 channels, we can use LPIPS directly
+                if outputs.shape[1] == 3:
+                    lpips_val = self.lpips_loss(outputs[b:b+1].to(device), targets[b:b+1].to(device))
+                    sample_loss = sample_loss + lpips_val.squeeze()
+                else:
+                    # For other channel counts, average over channels
+                    sample_lpips_sum = 0.0
+                    for c in range(outputs.shape[1]):
+                        # LPIPS expects 3-channel, so repeat to 3 channels
+                        out_img = outputs[b, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)  # (1,3,H,W)
+                        tgt_img = targets[b, c].unsqueeze(0).repeat(3,1,1).unsqueeze(0)
+                        lpips_val = self.lpips_loss(out_img.to(device), tgt_img.to(device))
+                        sample_lpips_sum += lpips_val
+                    sample_lpips = sample_lpips_sum / outputs.shape[1]
+                    
+                    # Add LPIPS to the loss
+                    sample_loss = sample_loss + sample_lpips
             
             # Apply loss coefficient if enabled
             if self.use_loss_coef:
@@ -1056,33 +1031,38 @@ class LatentDiffusionTrainer(Trainer):
             target_img = targets[0].detach().cpu().numpy()      # Image space
             source_img = sources[0].detach().cpu().numpy()      # Image space
             
-            # Create figure with 4 rows and 5 columns (for 5 channels)
-            fig, axes = plt.subplots(4, 5, figsize=(15, 12))
+            # Create figure with 4 rows and 4 columns (3 channels + 1 latent)
+            fig, axes = plt.subplots(4, 4, figsize=(12, 12))
             
             # Plot source channels
-            for i in range(5):
+            for i in range(3):
                 axes[0, i].imshow(source_img[i], cmap='viridis')
                 axes[0, i].set_title(f'Source Channel {i+1}')
                 axes[0, i].axis('off')
+            # Empty fourth column for source
+            axes[0, 3].axis('off')
             
-            # Plot some latent channels (first 3 of latent channels, repeated to fill 5 columns)
-            for i in range(5):
-                latent_idx = i % min(3, noisy_img.shape[0])  # Cycle through available latent channels
-                axes[1, i].imshow(noisy_img[latent_idx], cmap='viridis')
-                axes[1, i].set_title(f'Noisy Latent Ch {latent_idx+1}')
+            # Plot latent channels (4 channels for SD VAE)
+            for i in range(4):
+                axes[1, i].imshow(noisy_img[i], cmap='viridis')
+                axes[1, i].set_title(f'Noisy Latent Ch {i+1}')
                 axes[1, i].axis('off')
             
             # Plot denoised channels
-            for i in range(5):
+            for i in range(3):
                 axes[2, i].imshow(denoised_img[i], cmap='viridis')
                 axes[2, i].set_title(f'Denoised Channel {i+1}')
                 axes[2, i].axis('off')
+            # Empty fourth column for denoised
+            axes[2, 3].axis('off')
             
             # Plot target channels
-            for i in range(5):
+            for i in range(3):
                 axes[3, i].imshow(target_img[i], cmap='viridis')
                 axes[3, i].set_title(f'Target Channel {i+1}')
                 axes[3, i].axis('off')
+            # Empty fourth column for target
+            axes[3, 3].axis('off')
 
             fig.suptitle(f'Latent Diffusion - Timestep: {ts[0]}', fontsize=16)
             plt.tight_layout()
@@ -1166,22 +1146,22 @@ class LatentDiffusionTrainer(Trainer):
                 
                 # Create visualization
                 n_steps = len(intermediate_results)
-                fig, axes = plt.subplots(10, n_steps + 1, figsize=(2.2*n_steps, 20))
+                fig, axes = plt.subplots(6, n_steps + 1, figsize=(2.2*n_steps, 12))
                 
-                for j in range(10):
+                for j in range(6):
                     for i, (x, output) in enumerate(intermediate_results):
-                        x_img = x[0]  # Shape: (5, 512, 512)
-                        output_img = output[0]  # Shape: (5, 512, 512)
-                        target_img = target_single[0].detach().cpu().numpy()  # Shape: (5, 512, 512)
+                        x_img = x[0]  # Shape: (3, 512, 512)
+                        output_img = output[0]  # Shape: (3, 512, 512)
+                        target_img = target_single[0].detach().cpu().numpy()  # Shape: (3, 512, 512)
                         
-                        if j < 5:
+                        if j < 3:
                             axes[j, i].imshow(x_img[j], cmap='viridis')
                         else:
-                            axes[j, i].imshow(output_img[j-5], cmap='viridis')
+                            axes[j, i].imshow(output_img[j-3], cmap='viridis')
                         axes[j, i].axis('off')
 
                     # Target image
-                    axes[j, n_steps].imshow(target_img[j % 5], cmap='viridis')
+                    axes[j, n_steps].imshow(target_img[j % 3], cmap='viridis')
                     axes[j, n_steps].axis('off')
                 
                 plt.tight_layout()
@@ -1231,9 +1211,9 @@ def main(args=None):
 
     # Data loading setup (from data_processing.ipynb guide)
     if config.use_latent_diffusion:
-        # Use 5 channels for VQ latent diffusion: all channels
-        source_channels = [6, 6, 6, 7, 8]
-        target_channels = [1, 2, 3, 4, 5]
+        # Use 3 channels for SD VAE latent diffusion
+        source_channels = [7, 7, 7]
+        target_channels = [1, 2, 5]
     else:
         source_channels = [7, 7, 7, 7, 7]
         target_channels = [1, 2, 3, 4, 5]
@@ -1286,13 +1266,13 @@ def main(args=None):
     )
 
     if config.use_latent_diffusion:
-        # For latent diffusion with VQ: 3 channels, 128x128 spatial resolution
+        # For latent diffusion with SD VAE: 4 channels, 64x64 spatial resolution
         model = UNetModelSwin(
-            image_size=128,  # Latent spatial size (512/4=128 with VQ compression)
-            in_channels=3,   # VQ latent channels (embed_dim=3)
+            image_size=64,   # Latent spatial size (512/8=64 with SD VAE compression)
+            in_channels=4,   # SD VAE latent channels
             model_channels=160,
-            out_channels=3,  # VQ latent channels for output
-            attention_resolutions=[64, 32, 16, 8],  # Scaled for 128x128
+            out_channels=4,  # SD VAE latent channels for output
+            attention_resolutions=[32, 16, 8],  # Scaled for 64x64
             dropout=0,
             channel_mult=[1, 2, 2, 4],
             num_res_blocks=[2, 2, 2, 2],
@@ -1308,9 +1288,9 @@ def main(args=None):
             window_size=8,
             mlp_ratio=4,
             cond_lq=True,
-            lq_size=128  # Latent condition size
+            lq_size=64  # Latent condition size
         )
-        print(f"using latent diffusion with VQ swin unet (3 channels, 128x128)")
+        print(f"using latent diffusion with SD VAE swin unet (4 channels, 64x64)")
         scheduler = DiffusionScheduler(CFG(config.kappa, config.p, config.eta_T, config.T))
         trainer = LatentDiffusionTrainer(
             scheduler=scheduler,
