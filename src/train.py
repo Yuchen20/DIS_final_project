@@ -20,7 +20,7 @@ from pix2pix_improved import ImprovedPix2PixModel
 import lpips
 from safetensors.torch import load_file as load_safetensors
 from collections import OrderedDict
-from diffusers import AutoencoderDC
+from ldm.models.autoencoder import VQModelTorch
 import torchvision.transforms as transforms
 
 from skimage.metrics import structural_similarity as ssim
@@ -874,12 +874,46 @@ class LatentDiffusionTrainer(Trainer):
         self.use_lpips = use_lpips
         self._eval_batch_counter = 0
         
-        # Initialize AutoencoderDC and freeze it
+        # Initialize VQModelTorch and freeze it
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.autoencoder = AutoencoderDC.from_pretrained(
-            "mit-han-lab/dc-ae-f32c32-sana-1.1-diffusers", 
-            torch_dtype=torch.float16
+        
+        # VQ autoencoder configuration from the config file
+        ddconfig = {
+            "double_z": False,
+            "z_channels": 3,
+            "resolution": 512,
+            "in_channels": 5,
+            "out_ch": 5,
+            "ch": 128,
+            "ch_mult": [1, 2, 4],
+            "num_res_blocks": 2,
+            "attn_resolutions": [],
+            "dropout": 0.0,
+            "padding_mode": "zeros"
+        }
+        
+        self.autoencoder = VQModelTorch(
+            ddconfig=ddconfig,
+            n_embed=8192,
+            embed_dim=3,
+            remap=None,
+            sane_index_shape=False
         ).to(device).eval()
+        
+        # Load checkpoint
+        ckpt_path = "/rds/user/ym429/hpc-work/dissertation/Model/model_400000.pth"
+        ckpt = torch.load(ckpt_path, map_location=device)
+        if 'state_dict' in ckpt:
+            state_dict = ckpt['state_dict']
+        else:
+            state_dict = ckpt
+        
+        # Remove any 'loss' related keys if they exist
+        keys_to_remove = [key for key in state_dict.keys() if 'loss' in key]
+        for key in keys_to_remove:
+            del state_dict[key]
+        
+        self.autoencoder.load_state_dict(state_dict)
         
         # Freeze autoencoder parameters
         for param in self.autoencoder.parameters():
@@ -902,7 +936,7 @@ class LatentDiffusionTrainer(Trainer):
         super().__init__(*args, **kwargs)
 
     def encode_to_latent(self, images):
-        """Encode images to latent space using AutoencoderDC"""
+        """Encode images to latent space using VQModelTorch"""
         device = images.device
         
         # Apply transform to entire batch
@@ -910,24 +944,24 @@ class LatentDiffusionTrainer(Trainer):
         images_hwc = images.permute(0, 2, 3, 1)  # (B, H, W, C)
         images_transformed = self.transform(images_hwc)  # Apply normalization
         images_transformed = images_transformed.permute(0, 3, 1, 2)  # Back to (B, C, H, W)
-        images_transformed = images_transformed.to(device, torch.float16)
+        images_transformed = images_transformed.to(device, torch.float32)
         
         # Encode entire batch to latent
         # Note: for encoding, we can use no_grad since we don't need gradients to flow back to input images
         with torch.no_grad():
-            latents = self.autoencoder.encode(images_transformed).latent
+            latents = self.autoencoder.encode(images_transformed)  # VQ model returns tensor directly
         
         return latents  # (batch_size, latent_channels, latent_height, latent_width)
 
     def decode_from_latent(self, latents):
-        """Decode latents back to image space using AutoencoderDC"""
+        """Decode latents back to image space using VQModelTorch"""
         device = latents.device
         
         # Decode entire batch from latent
         # Note: autoencoder parameters are frozen, but we need gradients to flow through for training
-        # Ensure latents are in the same dtype as the autoencoder (float16)
-        latents_fp16 = latents.to(torch.float16)
-        decoded = self.autoencoder.decode(latents_fp16).sample
+        # VQ model expects float32
+        latents_fp32 = latents.to(torch.float32)
+        decoded = self.autoencoder.decode(latents_fp32)  # VQ model returns tensor directly
         # Denormalize: from [-1, 1] to [0, 1]
         decoded = decoded * 0.5 + 0.5
         # Keep in float32 for consistency with the rest of the pipeline
@@ -1021,29 +1055,30 @@ class LatentDiffusionTrainer(Trainer):
             target_img = targets[0].detach().cpu().numpy()      # Image space
             source_img = sources[0].detach().cpu().numpy()      # Image space
             
-            # Create figure with 4 rows and 3 columns (for 3 channels)
-            fig, axes = plt.subplots(4, 3, figsize=(9, 12))
+            # Create figure with 4 rows and 5 columns (for 5 channels)
+            fig, axes = plt.subplots(4, 5, figsize=(15, 12))
             
             # Plot source channels
-            for i in range(3):
+            for i in range(5):
                 axes[0, i].imshow(source_img[i], cmap='viridis')
                 axes[0, i].set_title(f'Source Channel {i+1}')
                 axes[0, i].axis('off')
             
-            # Plot some latent channels (first 3 of 32)
-            for i in range(3):
-                axes[1, i].imshow(noisy_img[i], cmap='viridis')
-                axes[1, i].set_title(f'Noisy Latent Ch {i+1}')
+            # Plot some latent channels (first 3 of latent channels, repeated to fill 5 columns)
+            for i in range(5):
+                latent_idx = i % min(3, noisy_img.shape[0])  # Cycle through available latent channels
+                axes[1, i].imshow(noisy_img[latent_idx], cmap='viridis')
+                axes[1, i].set_title(f'Noisy Latent Ch {latent_idx+1}')
                 axes[1, i].axis('off')
             
             # Plot denoised channels
-            for i in range(3):
+            for i in range(5):
                 axes[2, i].imshow(denoised_img[i], cmap='viridis')
                 axes[2, i].set_title(f'Denoised Channel {i+1}')
                 axes[2, i].axis('off')
             
             # Plot target channels
-            for i in range(3):
+            for i in range(5):
                 axes[3, i].imshow(target_img[i], cmap='viridis')
                 axes[3, i].set_title(f'Target Channel {i+1}')
                 axes[3, i].axis('off')
@@ -1130,22 +1165,22 @@ class LatentDiffusionTrainer(Trainer):
                 
                 # Create visualization
                 n_steps = len(intermediate_results)
-                fig, axes = plt.subplots(6, n_steps + 1, figsize=(2.2*n_steps, 12))
+                fig, axes = plt.subplots(10, n_steps + 1, figsize=(2.2*n_steps, 20))
                 
-                for j in range(6):
+                for j in range(10):
                     for i, (x, output) in enumerate(intermediate_results):
-                        x_img = x[0]  # Shape: (3, 512, 512)
-                        output_img = output[0]  # Shape: (3, 512, 512)
-                        target_img = target_single[0].detach().cpu().numpy()  # Shape: (3, 512, 512)
+                        x_img = x[0]  # Shape: (5, 512, 512)
+                        output_img = output[0]  # Shape: (5, 512, 512)
+                        target_img = target_single[0].detach().cpu().numpy()  # Shape: (5, 512, 512)
                         
-                        if j < 3:
+                        if j < 5:
                             axes[j, i].imshow(x_img[j], cmap='viridis')
                         else:
-                            axes[j, i].imshow(output_img[j-3], cmap='viridis')
+                            axes[j, i].imshow(output_img[j-5], cmap='viridis')
                         axes[j, i].axis('off')
 
                     # Target image
-                    axes[j, n_steps].imshow(target_img[j % 3], cmap='viridis')
+                    axes[j, n_steps].imshow(target_img[j % 5], cmap='viridis')
                     axes[j, n_steps].axis('off')
                 
                 plt.tight_layout()
@@ -1195,9 +1230,9 @@ def main(args=None):
 
     # Data loading setup (from data_processing.ipynb guide)
     if config.use_latent_diffusion:
-        # Use 3 channels for latent diffusion: source=[7,7,7], target=[1,2,5]
-        source_channels = [7, 7, 7]
-        target_channels = [1, 2, 5]
+        # Use 5 channels for VQ latent diffusion: all channels
+        source_channels = [6, 6, 6, 7, 8]
+        target_channels = [1, 2, 3, 4, 5]
     else:
         source_channels = [7, 7, 7, 7, 7]
         target_channels = [1, 2, 3, 4, 5]
@@ -1250,13 +1285,13 @@ def main(args=None):
     )
 
     if config.use_latent_diffusion:
-        # For latent diffusion: 32 channels, 16x16 spatial resolution
+        # For latent diffusion with VQ: 3 channels, 128x128 spatial resolution
         model = UNetModelSwin(
-            image_size=16,  # Latent spatial size
-            in_channels=32,  # Latent channels for noisy image
+            image_size=128,  # Latent spatial size (512/4=128 with VQ compression)
+            in_channels=3,   # VQ latent channels (embed_dim=3)
             model_channels=160,
-            out_channels=32,  # Latent channels for output
-            attention_resolutions=[16, 8, 4, 2],  # As requested
+            out_channels=3,  # VQ latent channels for output
+            attention_resolutions=[64, 32, 16, 8],  # Scaled for 128x128
             dropout=0,
             channel_mult=[1, 2, 2, 4],
             num_res_blocks=[2, 2, 2, 2],
@@ -1272,9 +1307,9 @@ def main(args=None):
             window_size=8,
             mlp_ratio=4,
             cond_lq=True,
-            lq_size=16  # Latent condition size
+            lq_size=128  # Latent condition size
         )
-        print(f"using latent diffusion with swin unet (32 channels, 16x16)")
+        print(f"using latent diffusion with VQ swin unet (3 channels, 128x128)")
         scheduler = DiffusionScheduler(CFG(config.kappa, config.p, config.eta_T, config.T))
         trainer = LatentDiffusionTrainer(
             scheduler=scheduler,
