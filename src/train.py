@@ -924,9 +924,13 @@ class LatentDiffusionTrainer(Trainer):
         
         # Decode entire batch from latent
         with torch.no_grad():
-            decoded = self.autoencoder.decode(latents).sample
+            # Ensure latents are in the same dtype as the autoencoder (float16)
+            latents_fp16 = latents.to(torch.float16)
+            decoded = self.autoencoder.decode(latents_fp16).sample
             # Denormalize: from [-1, 1] to [0, 1]
             decoded = decoded * 0.5 + 0.5
+            # Convert back to float32 for loss computation
+            decoded = decoded.to(torch.float32)
         
         return decoded  # (batch_size, channels, height, width)
 
