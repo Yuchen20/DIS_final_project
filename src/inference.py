@@ -540,7 +540,7 @@ class LatentDiffusionPredictor(BasePredictor):
             plt.close(fig)
         
         # Then log latent diffusion process if we have intermediate results
-        if step % 10 == 0 and hasattr(self, 'intermediate_results'):
+        if step % 50 == 0 and hasattr(self, 'intermediate_results'):
             # Create figure for latent diffusion process
             n_steps = len(self.intermediate_results)
             fig, axes = plt.subplots(6, n_steps + 2, figsize=(2.2*(n_steps + 1), 12))
