@@ -446,7 +446,7 @@ class LatentDiffusionPredictor(BasePredictor):
     def predict(self, sources):
         """Run latent diffusion inference"""
         config = CFG(kappa=2.0, p=0.3, eta_T=0.99, T=15)
-        ONE_STEP = True
+        ONE_STEP = False
         scheduler = DiffusionScheduler(config)
 
         # Ensure sources are on the correct device
