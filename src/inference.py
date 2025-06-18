@@ -409,12 +409,15 @@ class LatentDiffusionPredictor(BasePredictor):
         """Encode images to latent space using Stable Diffusion VAE"""
         device = images.device
         
+        # Ensure images are on the same device as the autoencoder
+        images = images.to(self.device)
+        
         # Apply transform to entire batch
         # Convert from (B, C, H, W) to (B, H, W, C) for transform, then back
         images_hwc = images.permute(0, 2, 3, 1)  # (B, H, W, C)
         images_transformed = self.transform(images_hwc)  # Apply normalization to [-1, 1]
         images_transformed = images_transformed.permute(0, 3, 1, 2)  # Back to (B, C, H, W)
-        images_transformed = images_transformed.to(device, torch.float32)
+        images_transformed = images_transformed.to(self.device, torch.float32)
         
         # Encode entire batch to latent
         with torch.no_grad():
@@ -425,6 +428,9 @@ class LatentDiffusionPredictor(BasePredictor):
     def decode_from_latent(self, latents):
         """Decode latents back to image space using Stable Diffusion VAE"""
         device = latents.device
+        
+        # Ensure latents are on the same device as the autoencoder
+        latents = latents.to(self.device)
         
         # Decode entire batch from latent
         latents_fp32 = latents.to(torch.float32)
@@ -443,6 +449,9 @@ class LatentDiffusionPredictor(BasePredictor):
         ONE_STEP = True
         scheduler = DiffusionScheduler(config)
 
+        # Ensure sources are on the correct device
+        sources = sources.to(self.device)
+        
         # Encode sources to latent space
         sources_latent = self.encode_to_latent(sources)
         
