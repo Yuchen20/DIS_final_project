@@ -22,7 +22,7 @@
 #! Note that the job submission script will enforce no more than 32 cpus per GPU.
 #SBATCH --gres=gpu:1
 #! How much wallclock time will be required?
-#SBATCH --time=24:00:00
+#SBATCH --time=16:00:00
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=ALL
 #! Uncomment this to prevent the job from being requeued (e.g. if
@@ -55,7 +55,8 @@ echo -e "\nRunning train_brain2vec.py\n"
 # python /home/ym429/project/final_project/src/inference.py --model_path /home/ym429/rds/hpc-work/dissertation/results/checkpoint-55296 --model_type swin_unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/resshift
 # accelerate launch /home/ym429/project/final_project/src/train.py  --output_dir /home/ym429/rds/hpc-work/dissertation/results/
 # accelerate launch /home/ym429/project/final_project/src/train.py --output_dir /rds/user/ym429/hpc-work/dissertation/results/rescell-15-step --use_diffusion
-python /home/ym429/project/final_project/src/inference.py --model_path /rds/user/ym429/hpc-work/dissertation/results/rescell-15-step-no_lpips/checkpoint-69120 --model_type swin_unet --output_dir /rds/user/ym429/hpc-work/dissertation/inference_results/rescell-15-step-no_lpips
+
+python /home/ym429/project/final_project/src/inference.py --model_path /rds/user/ym429/hpc-work/dissertation/results/rescell-15-step-latent-125/checkpoint-69120 --model_type latent_diffusion --output_dir /rds/user/ym429/hpc-work/dissertation/inference_results/rescell-15step-latent-125
 # python /home/ym429/project/final_project/src/inference.py --model_path /home/ym429/rds/hpc-work/dissertation/results/Unet/checkpoint-69120 --model_type unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/unet
 #! Insert additional module load commands after this line if needed:
 

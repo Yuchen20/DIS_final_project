@@ -14,6 +14,8 @@ from abc import ABC, abstractmethod
 from noise_scheduling import DiffusionScheduler, CFG
 import wandb
 from safetensors.torch import load_file as load_safetensors
+import torchvision.transforms as transforms
+from diffusers import AutoencoderKL
 
 # Assume `model_weights` is loaded from safetensors
 from collections import OrderedDict
@@ -345,6 +347,228 @@ class Pix2PixPredictor(BasePredictor):
             sources = sources.to(self.device)
             return self.model(sources)
 
+class LatentDiffusionPredictor(BasePredictor):
+    """Predictor for Latent Diffusion using Stable Diffusion VAE"""
+    
+    def __init__(self, model_path, device):
+        # Initialize autoencoder first before calling parent init
+        self.device = device
+        self._init_autoencoder()
+        super().__init__(model_path, device)
+        
+    def _init_autoencoder(self):
+        """Initialize and freeze the Stable Diffusion VAE"""
+        # Load pretrained Stable Diffusion VAE
+        self.autoencoder = AutoencoderKL.from_pretrained(
+            "stabilityai/sd-vae-ft-mse", 
+            torch_dtype=torch.float32
+        ).to(self.device).eval()
+        
+        print(f"Successfully loaded Stable Diffusion VAE for inference")
+        
+        # Freeze autoencoder parameters
+        for param in self.autoencoder.parameters():
+            param.requires_grad_(False)
+        
+        # Transform for autoencoder (expects normalized input [-1, 1])
+        self.transform = transforms.Compose([
+            transforms.Normalize(0.5, 0.5),
+        ])
+
+    def load_model(self, model_path):
+        """Load the latent diffusion model trained on 64x64 latent space"""
+        model = UNetModelSwin(
+            image_size=64,   # Latent spatial size (512/8=64 with SD VAE compression)
+            in_channels=4,   # SD VAE latent channels
+            model_channels=160,
+            out_channels=4,  # SD VAE latent channels for output
+            attention_resolutions=[32, 16, 8],  # Scaled for 64x64
+            dropout=0,
+            channel_mult=[1, 2, 2, 4],
+            num_res_blocks=[2, 2, 2, 2],
+            conv_resample=True,
+            dims=2,
+            use_fp16=False,
+            num_heads=1,
+            num_head_channels=32,
+            use_scale_shift_norm=True,
+            resblock_updown=False,
+            swin_depth=2,
+            swin_embed_dim=192,
+            window_size=8,
+            mlp_ratio=4,
+            cond_lq=True,
+            lq_size=64  # Latent condition size
+        )
+        checkpoint = self._load_hf_checkpoint(model_path)
+        model.load_state_dict(checkpoint)
+        model = model.to(self.device)
+        return model
+
+    def encode_to_latent(self, images):
+        """Encode images to latent space using Stable Diffusion VAE"""
+        device = images.device
+        
+        # Apply transform to entire batch
+        # Convert from (B, C, H, W) to (B, H, W, C) for transform, then back
+        images_hwc = images.permute(0, 2, 3, 1)  # (B, H, W, C)
+        images_transformed = self.transform(images_hwc)  # Apply normalization to [-1, 1]
+        images_transformed = images_transformed.permute(0, 3, 1, 2)  # Back to (B, C, H, W)
+        images_transformed = images_transformed.to(device, torch.float32)
+        
+        # Encode entire batch to latent
+        with torch.no_grad():
+            latents = self.autoencoder.encode(images_transformed).latent_dist.sample()
+        
+        return latents  # (batch_size, 4, height//8, width//8) for SD VAE
+
+    def decode_from_latent(self, latents):
+        """Decode latents back to image space using Stable Diffusion VAE"""
+        device = latents.device
+        
+        # Decode entire batch from latent
+        latents_fp32 = latents.to(torch.float32)
+        decoded = self.autoencoder.decode(latents_fp32).sample  # SD VAE returns .sample
+        # Denormalize: from [-1, 1] to [0, 1]
+        decoded = decoded * 0.5 + 0.5
+        # Keep in float32 for consistency with the rest of the pipeline
+        if decoded.dtype != torch.float32:
+            decoded = decoded.to(torch.float32)
+        
+        return decoded  # (batch_size, 3, height, width) for SD VAE
+
+    def predict(self, sources):
+        """Run latent diffusion inference"""
+        config = CFG(kappa=2.0, p=0.3, eta_T=0.99, T=15)
+        ONE_STEP = True
+        scheduler = DiffusionScheduler(config)
+
+        # Encode sources to latent space
+        sources_latent = self.encode_to_latent(sources)
+        
+        # Initialize x with noisy latent
+        t = config.T
+        x_latent = scheduler.get_noisy_image(t, sources_latent, sources_latent)
+        sources_latent = sources_latent.to(self.device)
+        
+        # Store intermediate results for logging
+        intermediate_results = []
+        
+        with torch.no_grad():
+            x_latent = x_latent.to(self.device)
+            batch_size = x_latent.shape[0]
+            for t in range(config.T, 0, -1):
+                # Create a batch of timesteps
+                timesteps = torch.full((batch_size,), t, device=self.device)
+                output_latent = self.model(x_latent, timesteps, lq=sources_latent)
+
+                if ONE_STEP:
+                    x_latent = output_latent
+                    # Decode to image space for final output
+                    x_decoded = self.decode_from_latent(x_latent)
+                    output_decoded = self.decode_from_latent(output_latent)
+                    intermediate_results.append(
+                        (x_decoded.detach().cpu().numpy(), output_decoded.detach().cpu().numpy())
+                    )
+                    break
+
+                coef_1 = scheduler.get_eta_t(t - 1) / scheduler.get_eta_t(t)
+                coef_2 = scheduler.get_alpha_t(t) / scheduler.get_eta_t(t)
+                coef_3 = config.kappa * scheduler.get_eta_t(t - 1) / scheduler.get_eta_t(t) * scheduler.get_alpha_t(t)
+
+                coef_1, coef_2, coef_3 = coef_1.to(self.device), coef_2.to(self.device), coef_3.to(self.device)
+
+                x_latent = coef_1 * x_latent + coef_2 * output_latent# + coef_3 * torch.randn_like(x_latent, device=self.device)
+
+                # Decode to image space for visualization
+                x_decoded = self.decode_from_latent(x_latent)
+                output_decoded = self.decode_from_latent(output_latent)
+                intermediate_results.append(
+                    (x_decoded.detach().cpu().numpy(), output_decoded.detach().cpu().numpy())
+                )
+        
+        # Return the final decoded image
+        final_output = self.decode_from_latent(x_latent)
+        return final_output, intermediate_results
+
+    def log_images(self, sources, predictions, targets, step):
+        """Override log_images to handle latent diffusion specifics"""
+        # First call parent class's log_images but adjust for 3 channels
+        if step % 50 == 0:
+            # Get first image from batch
+            source_img = sources[0].detach().cpu().numpy()    # Shape: (3, 512, 512)
+            pred_img = predictions[0].detach().cpu().numpy()  # Shape: (3, 512, 512)
+            target_img = targets[0].detach().cpu().numpy()    # Shape: (3, 512, 512)
+            
+            # Create figure with 3 rows (source, prediction, target) and 3 columns (channels)
+            fig, axes = plt.subplots(3, 3, figsize=(12, 12))
+            
+            # Plot source channels
+            for j in range(3):
+                axes[0, j].imshow(source_img[j], cmap='viridis')
+                axes[0, j].set_title(f'Source Channel {j+1}')
+                axes[0, j].axis('off')
+            
+            # Plot prediction channels
+            for j in range(3):
+                axes[1, j].imshow(pred_img[j], cmap='viridis')
+                axes[1, j].set_title(f'Pred Channel {j+1}')
+                axes[1, j].axis('off')
+            
+            # Plot target channels
+            for j in range(3):
+                axes[2, j].imshow(target_img[j], cmap='viridis')
+                axes[2, j].set_title(f'Target Channel {j+1}')
+                axes[2, j].axis('off')
+            
+            plt.tight_layout()
+            
+            # Log to wandb
+            wandb.log({
+                'latent_inference_comparison': wandb.Image(fig),
+            }, step=step)
+            
+            plt.close(fig)
+        
+        # Then log latent diffusion process if we have intermediate results
+        if step % 10 == 0 and hasattr(self, 'intermediate_results'):
+            # Create figure for latent diffusion process
+            n_steps = len(self.intermediate_results)
+            fig, axes = plt.subplots(6, n_steps + 2, figsize=(2.2*(n_steps + 1), 12))
+            
+            # Plot source images first
+            source_img = sources[0].detach().cpu().numpy()  # Shape: (3, 512, 512)
+            for j in range(6):
+                axes[j, 0].imshow(source_img[j % 3], cmap='viridis')
+                axes[j, 0].axis('off')
+            
+            # Plot intermediate results
+            for j in range(6):
+                for i, (x, output) in enumerate(self.intermediate_results):
+                    x_img = x[0]  # Shape: (3, 512, 512)
+                    output_img = output[0]  # Shape: (3, 512, 512)
+                    target_img = targets[0].detach().cpu().numpy() # Shape: (3, 512, 512)
+                    
+                    if j < 3:
+                        axes[j, i+1].imshow(x_img[j], cmap='viridis')
+                    else:
+                        axes[j, i+1].imshow(output_img[j-3], cmap='viridis')
+                    axes[j, i+1].axis('off')
+
+            # Plot target images last
+            for j in range(6):
+                axes[j, n_steps+1].imshow(target_img[j % 3], cmap='viridis')
+                axes[j, n_steps+1].axis('off')
+            
+            plt.tight_layout()
+            
+            # Log latent diffusion process to wandb
+            wandb.log({
+                'latent_diffusion_process': wandb.Image(fig),
+            }, step=step)
+            
+            plt.close(fig)
+
 def get_predictor(model_type, model_path, device):
     """Factory function to get the appropriate predictor"""
     if model_type == 'unet':
@@ -353,13 +577,15 @@ def get_predictor(model_type, model_path, device):
         return SwinUNetPredictor(model_path, device)
     elif model_type == 'pix2pix':
         return Pix2PixPredictor(model_path, device)
+    elif model_type == 'latent_diffusion':
+        return LatentDiffusionPredictor(model_path, device)
     else:
         raise ValueError(f'Unknown model type: {model_type}')
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Run inference with UNet model')
     parser.add_argument('--model_path', type=str, required=True, help='Path to the trained model checkpoint')
-    parser.add_argument('--model_type', type=str, required=True, choices=['unet', 'swin_unet', 'pix2pix'], help='Type of model to use')
+    parser.add_argument('--model_type', type=str, required=True, choices=['unet', 'swin_unet', 'pix2pix', 'latent_diffusion'], help='Type of model to use')
     parser.add_argument('--output_dir', type=str, required=True, help='Directory to save inference results')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for inference')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to run inference on')
@@ -473,11 +699,23 @@ def main():
     base_csv_dir = "/home/ym429/rds/hpc-work/dissertation"
     test_csv_list = [os.path.join(base_csv_dir, f"unique_paths_{p}.csv") for p in test_plates]
     
+    # Configure dataset channels based on model type
+    if args.model_type == 'latent_diffusion':
+        # Use 3 channels for latent diffusion (matches training configuration)
+        source_channels = [7, 7, 7]         # 3 input channels (all channel 7)
+        target_channels = [1, 2, 5]         # 3 output channels 
+        num_channels = 3
+    else:
+        # Use 5 channels for other models
+        source_channels = [7, 7, 7, 7, 7]   # 5 input channels (all channel 7)
+        target_channels = [1, 2, 3, 4, 5]   # 5 output channels
+        num_channels = 5
+    
     # Create test dataset
     test_dataset = DiffusionDataset(
         csv_file_list=test_csv_list,
-        source_channels=[7, 7, 7, 7, 7],  # 5 input channels (all channel 7)
-        target_channels=[1, 2, 3, 4, 5],  # 5 output channels
+        source_channels=source_channels,
+        target_channels=target_channels,
         img_size=(512, 512),
         get_prefix=True
     )
@@ -503,7 +741,7 @@ def main():
         sources, target, prefix = batch
         
         # Get model predictions using the predictor
-        if isinstance(predictor, SwinUNetPredictor):
+        if isinstance(predictor, (SwinUNetPredictor, LatentDiffusionPredictor)):
             output, intermediate_results = predictor.predict(sources)
             predictor.intermediate_results = intermediate_results
         else:
@@ -524,8 +762,8 @@ def main():
             else:
                 metrics = calculate_metrics(output[i], target[i])
             
-            # Save metrics for each channel
-            for ch_idx in range(5):  # 5 channels for swin_unet and pix2pix
+            # Save metrics for each channel (num_channels depends on model type)
+            for ch_idx in range(num_channels):
                 save_metrics_to_csv(metrics, metrics_file, prefix[i], ch_idx)
             
             # Save predictions and targets
@@ -549,6 +787,9 @@ if __name__ == '__main__':
 
 ## For Pix2Pix (standalone training):
 # python inference.py --model_path /path/to/pix2pix_checkpoint.pth --model_type pix2pix --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/pix2pix
+
+## For Latent Diffusion:
+# python inference.py --model_path /rds/user/ym429/hpc-work/dissertation/results/rescell-15-step-latent-125/checkpoint-69120 --model_type latent_diffusion --output_dir /rds/user/ym429/hpc-work/dissertation/inference_results/rescell-15step-latent-125
 
 
 # python inference.py --model_path /home/ym429/rds/hpc-work/dissertation/results/checkpoint-55296 --model_type swin_unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/resshift
