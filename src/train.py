@@ -1213,7 +1213,7 @@ def main(args=None):
     if config.use_latent_diffusion:
         # Use 3 channels for SD VAE latent diffusion
         source_channels = [7, 7, 7]
-        target_channels = [1, 2, 5]
+        target_channels = [3, 4, 5]
     else:
         source_channels = [7, 7, 7, 7, 7]
         target_channels = [1, 2, 3, 4, 5]

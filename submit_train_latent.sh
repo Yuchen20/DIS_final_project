@@ -55,7 +55,7 @@ echo -e "\nRunning train_brain2vec.py\n"
 # python /home/ym429/project/final_project/src/inference.py --model_path /home/ym429/rds/hpc-work/dissertation/results/checkpoint-55296 --model_type swin_unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/resshift
 # accelerate launch /home/ym429/project/final_project/src/train.py  --output_dir /home/ym429/rds/hpc-work/dissertation/results/
 # accelerate launch /home/ym429/project/final_project/src/train.py --output_dir /rds/user/ym429/hpc-work/dissertation/results/rescell-15-step-no_lpips --use_diffusion
-accelerate launch src/train.py --output_dir /rds/user/ym429/hpc-work/dissertation/results/rescell-15-step-latent-125 --use_latent_diffusion
+accelerate launch src/train.py --output_dir /rds/user/ym429/hpc-work/dissertation/results/rescell-15-step-latent-345 --use_latent_diffusion
 # python /home/ym429/project/final_project/src/inference.py --model_path /rds/user/ym429/hpc-work/dissertation/results/rescell-15-step/checkpoint-69120 --model_type swin_unet --output_dir /rds/user/ym429/hpc-work/dissertation/inference_results/rescell-15step
 # python /home/ym429/project/final_project/src/inference.py --model_path /home/ym429/rds/hpc-work/dissertation/results/Unet/checkpoint-69120 --model_type unet --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/unet
 #! Insert additional module load commands after this line if needed:
