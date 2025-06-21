@@ -712,7 +712,7 @@ def main():
     if args.model_type == 'latent_diffusion':
         # Use 3 channels for latent diffusion (matches training configuration)
         source_channels = [7, 7, 7]         # 3 input channels (all channel 7)
-        target_channels = [1, 2, 5]         # 3 output channels 
+        target_channels = [3, 4, 5]         # 3 output channels 
         num_channels = 3
     else:
         # Use 5 channels for other models
