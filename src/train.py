@@ -26,6 +26,8 @@ from collections import OrderedDict
 from diffusers import AutoencoderKL
 import torchvision.transforms as transforms
 
+# accelerate launch src/train.py --use_deephcs --deephcs_training_stage 3 --output_dir /rds/user/ym429/hpc-work/dissertation/results/DeepHCS
+
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import peak_signal_noise_ratio as psnr
 # 1. Configuration
@@ -1252,11 +1254,11 @@ class DeepHCSTrainer(Trainer):
         # Log images every 1000 steps
         step = self.state.global_step
         if step and step % 1000 == 0:
-            self._log_training_images(sources, targets, outputs, step)
+            self._log_training_images(sources, targets, outputs, step, loss.item())
         
         return (loss, outputs) if return_outputs else loss
     
-    def _log_training_images(self, sources, targets, outputs, step):
+    def _log_training_images(self, sources, targets, outputs, step, loss_value):
         """Log training images to wandb"""
         # Get first item in batch
         source_img = sources[0].detach().cpu().numpy()    # [5, 512, 512]
@@ -1290,7 +1292,7 @@ class DeepHCSTrainer(Trainer):
         # Log to wandb
         wandb.log({
             'deephcs_training': wandb.Image(fig),
-            'loss': self.state.log_history[-1]['train_loss'] if self.state.log_history else 0
+            'loss': loss_value
         }, step=step)
         
         plt.close(fig)
