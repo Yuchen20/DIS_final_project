@@ -18,6 +18,8 @@ from plain_unet import UNet
 from unet import UNetModelSwin
 from pix2pix import Pix2PixModel
 from pix2pix_improved import ImprovedPix2PixModel
+from deephcs import DeepHCSModel
+from ssim_loss import ms_ssim_loss
 import lpips
 from safetensors.torch import load_file as load_safetensors
 from collections import OrderedDict
@@ -56,11 +58,15 @@ class TrainConfig:
     use_pix2pix: bool = False
     use_consistency_distillation: bool = True
     use_latent_diffusion: bool = False  # New flag for latent diffusion
+    use_deephcs: bool = False  # New flag for DeepHCS
     # consistency distillation params
     cd_ema_decay: float = 0.9999  # μ in the paper
     cd_pretrained_path: str = "/rds/user/ym429/hpc-work/dissertation/results/rescell-15step-no_loss_coef-LPIPS/checkpoint-69120"  # Path to pretrained diffusion model
     cd_lambda_weight: float = 0.2  # Weight function λ(t_n)
     cd_target_reg_weight: float = 1.0  # Weight for target regularization term
+    # DeepHCS params
+    deephcs_alpha: float = 0.8  # Weight for combining MAE and MS-SSIM in refinement stage
+    deephcs_training_stage: int = 1  # 1: Transform only, 2: Refinement only, 3: Both
 
 
 
@@ -1177,6 +1183,171 @@ class LatentDiffusionTrainer(Trainer):
             
         return (loss, None, None)
 
+class DeepHCSTrainer(Trainer):
+    """Trainer for DeepHCS model with two-stage training"""
+    
+    def __init__(self, alpha: float = 0.8, training_stage: int = 1, *args, **kwargs):
+        self.alpha = alpha  # Weight for combining MAE and MS-SSIM
+        self.training_stage = training_stage  # 1: Transform only, 2: Refinement only, 3: Both
+        self._eval_batch_counter = 0
+        super().__init__(*args, **kwargs)
+        
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        sources = inputs['source']
+        targets = inputs['target']
+        
+        if self.training_stage == 1:
+            # Stage 1: Train Transform Network only with MSE
+            outputs = model(sources, use_refinement=False)
+            loss = (outputs - targets).pow(2).mean()
+            
+        elif self.training_stage == 2:
+            # Stage 2: Train Refinement Network only with MAE + MS-SSIM
+            # Freeze transform network and train refinement
+            with torch.no_grad():
+                transform_output = model.transform_net(sources)
+            
+            # Forward through refinement network
+            refine_input = torch.cat([transform_output, sources], dim=1)
+            outputs = model.refine_net(refine_input)
+            
+            # Combined loss: (1-alpha) * MAE + alpha * MS-SSIM
+            mae_loss = (outputs - targets).abs().mean()
+            
+            # MS-SSIM loss (computed per channel and averaged)
+            ms_ssim_total = 0.0
+            for i in range(outputs.shape[1]):  # Iterate over channels
+                output_channel = outputs[:, i:i+1]  # Keep batch and add channel dim
+                target_channel = targets[:, i:i+1]
+                ms_ssim_channel = ms_ssim_loss(output_channel, target_channel)
+                ms_ssim_total += ms_ssim_channel
+            ms_ssim_avg = ms_ssim_total / outputs.shape[1]
+            
+            loss = (1 - self.alpha) * mae_loss + self.alpha * ms_ssim_avg
+            
+        else:  # training_stage == 3
+            # Stage 3: Train both networks jointly
+            outputs, transform_output = model(sources, use_refinement=True)
+            
+            # MSE loss for transform network
+            transform_loss = (transform_output - targets).pow(2).mean()
+            
+            # Combined loss for refinement network
+            mae_loss = (outputs - targets).abs().mean()
+            
+            # MS-SSIM loss (computed per channel and averaged)
+            ms_ssim_total = 0.0
+            for i in range(outputs.shape[1]):  # Iterate over channels
+                output_channel = outputs[:, i:i+1]
+                target_channel = targets[:, i:i+1]
+                ms_ssim_channel = ms_ssim_loss(output_channel, target_channel)
+                ms_ssim_total += ms_ssim_channel
+            ms_ssim_avg = ms_ssim_total / outputs.shape[1]
+            
+            refinement_loss = (1 - self.alpha) * mae_loss + self.alpha * ms_ssim_avg
+            
+            # Combined loss (equal weighting)
+            loss = 0.5 * transform_loss + 0.5 * refinement_loss
+        
+        # Log images every 1000 steps
+        step = self.state.global_step
+        if step and step % 1000 == 0:
+            self._log_training_images(sources, targets, outputs, step)
+        
+        return (loss, outputs) if return_outputs else loss
+    
+    def _log_training_images(self, sources, targets, outputs, step):
+        """Log training images to wandb"""
+        # Get first item in batch
+        source_img = sources[0].detach().cpu().numpy()    # [5, 512, 512]
+        pred_img = outputs[0].detach().cpu().numpy()      # [5, 512, 512]
+        target_img = targets[0].detach().cpu().numpy()    # [5, 512, 512]
+        
+        # Create figure with 3 rows (source, pred, target) and 5 columns (channels)
+        fig, axes = plt.subplots(3, 5, figsize=(20, 12))
+        
+        # Plot source channels
+        for i in range(5):
+            axes[0, i].imshow(source_img[i], cmap='viridis')
+            axes[0, i].set_title(f'Source Ch {i+1}')
+            axes[0, i].axis('off')
+        
+        # Plot predicted channels
+        for i in range(5):
+            axes[1, i].imshow(pred_img[i], cmap='viridis')
+            axes[1, i].set_title(f'DeepHCS Pred Ch {i+1}')
+            axes[1, i].axis('off')
+        
+        # Plot target channels
+        for i in range(5):
+            axes[2, i].imshow(target_img[i], cmap='viridis')
+            axes[2, i].set_title(f'Target Ch {i+1}')
+            axes[2, i].axis('off')
+        
+        fig.suptitle(f'DeepHCS Training - Stage {self.training_stage}', fontsize=16)
+        plt.tight_layout()
+        
+        # Log to wandb
+        wandb.log({
+            'deephcs_training': wandb.Image(fig),
+            'loss': self.state.log_history[-1]['train_loss'] if self.state.log_history else 0
+        }, step=step)
+        
+        plt.close(fig)
+
+    def prediction_step(self, model, inputs, *args, **kwargs):
+        """Override prediction step for evaluation"""
+        sources = inputs['source']
+        targets = inputs['target']
+        
+        with torch.no_grad():
+            if self.training_stage == 1:
+                outputs = model(sources, use_refinement=False)
+            else:
+                outputs, _ = model(sources, use_refinement=True)
+            
+            loss = (outputs - targets).pow(2).mean()
+            
+            # Log validation images occasionally
+            self._eval_batch_counter += 1
+            if self._eval_batch_counter % 50 == 0:
+                self._log_validation_images(sources, targets, outputs)
+        
+        return (loss, None, None)
+    
+    def _log_validation_images(self, sources, targets, outputs):
+        """Log validation images to wandb"""
+        # Get first item in batch
+        source_img = sources[0].detach().cpu().numpy()
+        pred_img = outputs[0].detach().cpu().numpy()
+        target_img = targets[0].detach().cpu().numpy()
+        
+        # Create figure
+        fig, axes = plt.subplots(3, 5, figsize=(20, 12))
+        
+        # Plot channels
+        for i in range(5):
+            axes[0, i].imshow(source_img[i], cmap='viridis')
+            axes[0, i].set_title(f'Source Ch {i+1}')
+            axes[0, i].axis('off')
+            
+            axes[1, i].imshow(pred_img[i], cmap='viridis')
+            axes[1, i].set_title(f'DeepHCS Pred Ch {i+1}')
+            axes[1, i].axis('off')
+            
+            axes[2, i].imshow(target_img[i], cmap='viridis')
+            axes[2, i].set_title(f'Target Ch {i+1}')
+            axes[2, i].axis('off')
+        
+        fig.suptitle(f'DeepHCS Validation - Stage {self.training_stage}', fontsize=16)
+        plt.tight_layout()
+        
+        wandb.log({
+            'deephcs_validation': wandb.Image(fig),
+        }, step=self._eval_batch_counter)
+        
+        plt.close(fig)
+
 # 5. Main training function
 def main(args=None):
     # Start with default config
@@ -1189,7 +1360,7 @@ def main(args=None):
             if hasattr(config, key):
                 # For boolean flags with action='store_true', they will be False by default
                 # and True if the flag is provided
-                if key in ['use_diffusion', 'use_pix2pix', 'use_consistency_distillation', 'use_latent_diffusion', 'load_best_model_at_end', 'fp16']:
+                if key in ['use_diffusion', 'use_pix2pix', 'use_consistency_distillation', 'use_latent_diffusion', 'use_deephcs', 'load_best_model_at_end', 'fp16']:
                     setattr(config, key, value)
                 elif value is not None:  # For other arguments, only override if explicitly provided
                     setattr(config, key, value)
@@ -1421,6 +1592,34 @@ def main(args=None):
             eval_dataset=eval_dataset,
             data_collator=data_collator
         )
+    elif config.use_deephcs:
+        model = DeepHCSModel(in_channels=len(source_channels), out_channels=len(target_channels))
+        print(f"using DeepHCS with Transform and Refinement Networks")
+        print(f"Training stage: {config.deephcs_training_stage} (1=Transform only, 2=Refinement only, 3=Both)")
+        print(f"Alpha (MAE/MS-SSIM weight): {config.deephcs_alpha}")
+        
+        # Set up parameter groups for different training stages
+        if config.deephcs_training_stage == 1:
+            # Stage 1: Train only Transform Network
+            for param in model.refine_net.parameters():
+                param.requires_grad = False
+            print("Freezing Refinement Network parameters")
+        elif config.deephcs_training_stage == 2:
+            # Stage 2: Train only Refinement Network
+            for param in model.transform_net.parameters():
+                param.requires_grad = False
+            print("Freezing Transform Network parameters")
+        # Stage 3: Train both (default, no freezing needed)
+        
+        trainer = DeepHCSTrainer(
+            alpha=config.deephcs_alpha,
+            training_stage=config.deephcs_training_stage,
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            data_collator=data_collator
+        )
     else:
         model = UNet(in_channels=len(source_channels), out_channels=len(target_channels))
         print(f"using plain unet")
@@ -1470,10 +1669,13 @@ if __name__ == '__main__':
     parser.add_argument('--use_pix2pix', action='store_true', help='Use pix2pix training')
     parser.add_argument('--use_consistency_distillation', action='store_true', help='Use consistency distillation training')
     parser.add_argument('--use_latent_diffusion', action='store_true', help='Use latent diffusion training with AutoencoderDC')
+    parser.add_argument('--use_deephcs', action='store_true', help='Use DeepHCS training')
     parser.add_argument('--cd_ema_decay', type=float, default=None, help='Consistency distillation ema decay')
     parser.add_argument('--cd_pretrained_path', type=str, default=None, help='Consistency distillation pretrained path')
     parser.add_argument('--cd_lambda_weight', type=float, default=None, help='Consistency distillation lambda weight')
     parser.add_argument('--cd_target_reg_weight', type=float, default=None, help='Consistency distillation target regularization weight')
+    parser.add_argument('--deephcs_alpha', type=float, default=None, help='DeepHCS alpha weight for MAE/MS-SSIM combination')
+    parser.add_argument('--deephcs_training_stage', type=int, default=None, help='DeepHCS training stage (1=Transform, 2=Refinement, 3=Both)')
     args = parser.parse_args()
 
     main(args)
