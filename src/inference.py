@@ -35,6 +35,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../mode
 from plain_unet import UNet
 from unet import UNetModelSwin
 from pix2pix_improved import ImprovedPix2PixModel
+from deephcs import DeepHCSModel
 
 class BasePredictor(ABC):
     """Base class for model predictors"""
@@ -347,6 +348,80 @@ class Pix2PixPredictor(BasePredictor):
             sources = sources.to(self.device)
             return self.model(sources)
 
+class DeepHCSPredictor(BasePredictor):
+    """Predictor for DeepHCS model with Transform and Refinement Networks"""
+    def load_model(self, model_path):
+        model = DeepHCSModel(in_channels=5, out_channels=5)
+        checkpoint = self._load_hf_checkpoint(model_path)
+        model.load_state_dict(checkpoint)
+        model = model.to(self.device)
+        return model
+
+    def predict(self, sources, show_intermediate=False):
+        """Run inference with DeepHCS model"""
+        with torch.no_grad():
+            sources = sources.to(self.device)
+            
+            if show_intermediate:
+                # Get both transform and refined outputs for visualization
+                refined_output, transform_output = self.model(sources, use_refinement=True)
+                return refined_output, transform_output
+            else:
+                # Just return the final refined output
+                refined_output, _ = self.model(sources, use_refinement=True)
+                return refined_output
+
+    def log_images(self, sources, predictions, targets, step):
+        """Log images to wandb with DeepHCS-specific visualization"""
+        if step % 10 == 0:
+            # Get intermediate results for visualization
+            with torch.no_grad():
+                sources_device = sources.to(self.device)
+                refined_output, transform_output = self.model(sources_device, use_refinement=True)
+            
+            # Get first image from batch
+            source_img = sources[0].detach().cpu().numpy()
+            transform_img = transform_output[0].detach().cpu().numpy()
+            refined_img = refined_output[0].detach().cpu().numpy()
+            target_img = targets[0].detach().cpu().numpy()
+            
+            # Create figure with 4 rows (source, transform, refined, target) and 5 columns (channels)
+            fig, axes = plt.subplots(4, 5, figsize=(20, 16))
+            
+            # Plot source channels
+            for j in range(5):
+                axes[0, j].imshow(source_img[j], cmap='viridis')
+                axes[0, j].set_title(f'Source Channel {j+1}')
+                axes[0, j].axis('off')
+            
+            # Plot transform network output
+            for j in range(5):
+                axes[1, j].imshow(transform_img[j], cmap='viridis')
+                axes[1, j].set_title(f'Transform Ch {j+1}')
+                axes[1, j].axis('off')
+            
+            # Plot refined output (final prediction)
+            for j in range(5):
+                axes[2, j].imshow(refined_img[j], cmap='viridis')
+                axes[2, j].set_title(f'Refined Ch {j+1}')
+                axes[2, j].axis('off')
+            
+            # Plot target channels
+            for j in range(5):
+                axes[3, j].imshow(target_img[j], cmap='viridis')
+                axes[3, j].set_title(f'Target Channel {j+1}')
+                axes[3, j].axis('off')
+            
+            plt.suptitle('DeepHCS Inference: Transform → Refinement', fontsize=16)
+            plt.tight_layout()
+            
+            # Log to wandb
+            wandb.log({
+                'deephcs_inference': wandb.Image(fig),
+            }, step=step)
+            
+            plt.close(fig)
+
 class LatentDiffusionPredictor(BasePredictor):
     """Predictor for Latent Diffusion using Stable Diffusion VAE"""
     
@@ -586,6 +661,8 @@ def get_predictor(model_type, model_path, device):
         return SwinUNetPredictor(model_path, device)
     elif model_type == 'pix2pix':
         return Pix2PixPredictor(model_path, device)
+    elif model_type == 'deephcs':
+        return DeepHCSPredictor(model_path, device)
     elif model_type == 'latent_diffusion':
         return LatentDiffusionPredictor(model_path, device)
     else:
@@ -594,7 +671,7 @@ def get_predictor(model_type, model_path, device):
 def parse_args():
     parser = argparse.ArgumentParser(description='Run inference with UNet model')
     parser.add_argument('--model_path', type=str, required=True, help='Path to the trained model checkpoint')
-    parser.add_argument('--model_type', type=str, required=True, choices=['unet', 'swin_unet', 'pix2pix', 'latent_diffusion'], help='Type of model to use')
+    parser.add_argument('--model_type', type=str, required=True, choices=['unet', 'swin_unet', 'pix2pix', 'deephcs', 'latent_diffusion'], help='Type of model to use')
     parser.add_argument('--output_dir', type=str, required=True, help='Directory to save inference results')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for inference')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to run inference on')
@@ -796,6 +873,9 @@ if __name__ == '__main__':
 
 ## For Pix2Pix (standalone training):
 # python inference.py --model_path /path/to/pix2pix_checkpoint.pth --model_type pix2pix --output_dir /home/ym429/rds/hpc-work/dissertation/inference_results/pix2pix
+
+## For DeepHCS:
+# python inference.py --model_path /rds/user/ym429/hpc-work/dissertation/results/DeepHCS/checkpoint-69120 --model_type deephcs --output_dir /rds/user/ym429/hpc-work/dissertation/inference_results/deephcs
 
 ## For Latent Diffusion:
 # python inference.py --model_path /rds/user/ym429/hpc-work/dissertation/results/rescell-15-step-latent-125/checkpoint-69120 --model_type latent_diffusion --output_dir /rds/user/ym429/hpc-work/dissertation/inference_results/rescell-15step-latent-125
