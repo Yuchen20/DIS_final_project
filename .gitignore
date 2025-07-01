@@ -1,3 +1,8 @@
 /CodeGraveyard
 /venv
 /notebooks/data_processing.ipynb
+Cell_Profiler/cell_profiler_original_files/*
+!Cell_Profiler/cell_profiler_original_files/*.*
+Cell_Profiler/cell_profiler_input/*
+Cell_Profiler/cell_profiler_results/*
+!Cell_Profiler/cell_profiler_results/*.*
