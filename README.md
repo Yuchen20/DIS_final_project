@@ -4,6 +4,11 @@
 
 
 ## Description
+This project is associated with the submission of the coursework for the Research Project as part of the MPhil in Data Intensive Science at the University of Cambridge. The associated project writeup can be found under `report` folder. The dissertation report can be found at `report/Dissertation.pdf`, and the executive summary can be found at `report/exsummary.pdf`.
+
+The primary objective of this project is to reproduce the results presented in https://arxiv.org/abs/2407.09507 and the results presented in https://arxiv.org/abs/2407.17882. However, this work extends the original work by (i) integrating consistency distillation to the CellResDM model, and (ii) doing additional ablation studies.
+
+### Projct Overview
 
 CellResDM is a next-generation deep learning framework for synthesizing multiplexed Cell Painting immunofluorescence (IF) images directly from brightfield (BF) microscopy. By leveraging a novel residual-shifted diffusion process and transformer-enhanced UNet architectures, CellResDM enables rapid, high-fidelity prediction of biologically meaningful fluorescence channels from label-free input, dramatically reducing the need for costly and time-consuming experimental staining.
 
@@ -12,6 +17,7 @@ This repository provides a reproducible implementation of CellResDM and its cons
 ## Table of Contents
 - [CellResDM: Residual-Shifted Diffusion Models for Efficient Cell Painting Synthesis from Brightfield](#cellresdm-residual-shifted-diffusion-models-for-efficient-cell-painting-synthesis-from-brightfield)
   - [Description](#description)
+    - [Projct Overview](#projct-overview)
   - [Table of Contents](#table-of-contents)
     - [Project Structure 🗂️](#project-structure-️)
   - [Installation](#installation)
