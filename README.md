@@ -1,10 +1,10 @@
-# CellResDM: Residual-Shifted Diffusion Models for Efficient Cell Painting Synthesis from Brightfield
+# Transforming Drug Discovery with Generative AI and Foundation Models: Enhancing High-Throughput Screening
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 
 ## Description
-This project is associated with the submission of the coursework for the Research Project as part of the MPhil in Data Intensive Science at the University of Cambridge. The associated project writeup can be found under `report` folder. The dissertation report can be found at `report/Dissertation.pdf`, and the executive summary can be found at `report/exsummary.pdf`.
+This project is associated with the submission of the coursework for the Research Project as part of the MPhil in Data Intensive Science at the University of Cambridge. The associated project writeup can be found under `report` folder. The dissertation report can be found at [`report/Dissertation.pdf`](report/Dissertation.pdf), and the executive summary can be found at [`report/exsummary.pdf`](report/exsummary.pdf).
 
 The primary objective of this project is to reproduce the results presented in https://arxiv.org/abs/2407.09507 and the results presented in https://arxiv.org/abs/2407.17882. However, this work extends the original work by (i) integrating consistency distillation to the CellResDM model, and (ii) doing additional ablation studies.
 
@@ -14,11 +14,12 @@ CellResDM is a next-generation deep learning framework for synthesizing multiple
 
 This repository provides a reproducible implementation of CellResDM and its consistency-distilled variant, along with strong baselines (UNet, Pix2Pix, DeepHCS). It includes all code for training, inference, and evaluation on the public Cell Painting Gallery dataset, as well as scripts for extracting and comparing single-cell morphological features. The methods here empower researchers to accelerate high-content screening, improve phenotypic profiling, and explore new frontiers in computational cell biology.
 
-## Table of Contents
-- [CellResDM: Residual-Shifted Diffusion Models for Efficient Cell Painting Synthesis from Brightfield](#cellresdm-residual-shifted-diffusion-models-for-efficient-cell-painting-synthesis-from-brightfield)
+<details>
+<summary>Table of Contents</summary>
+
+- [Transforming Drug Discovery with Generative AI and Foundation Models: Enhancing High-Throughput Screening](#transforming-drug-discovery-with-generative-ai-and-foundation-models-enhancing-high-throughput-screening)
   - [Description](#description)
     - [Projct Overview](#projct-overview)
-  - [Table of Contents](#table-of-contents)
     - [Project Structure 🗂️](#project-structure-️)
   - [Installation](#installation)
   - [Dataset](#dataset)
@@ -51,40 +52,9 @@ This repository provides a reproducible implementation of CellResDM and its cons
   - [License](#license)
   - [Acknowledgments](#acknowledgments)
   - [Citation](#citation)
-<!-- 
-## Quick-Start ⚡
 
-```bash
-# 1.  Grab the code & env
-git clone https://gitlab.developers.cam.ac.uk/phy/data-intensive-science-mphil/assessments/projects/ym429.git
+</details>
 
-cd ym429
-conda env create -f environment.yml
-conda activate cellresdm
-
-# 2.  Download the dataset
-# Modify the LOCAL_ROOT variable in the download_plates.sh to set your desired storage path
-bash download_plates.sh --plates BR00116991 --local ./data
-
-# 3.  Train a 15-step CellResDM on 4× images (toy run ~5 min)
-accelerate launch src/train.py --output_dir toy_run --use_diffusion 
-
-# 4 Inference
-python src/inference.py --model_path toy_run/checkpoint-*/ \
-    --model_type swin_unet --output_dir demo_pred
-
-
-# 5.  Distill to a 2-step model and run inference
-accelerate launch src/train.py --output_dir toy_run_distill \
-    --use_consistency_distillation --num_train_epochs 1 \
-    --cd_pretrained_path toy_run/checkpoint-*/
-
-# 6.  Run inference
-python src/inference.py --model_path toy_run_distill/checkpoint-* \
-    --model_type swin_unet --output_dir demo_pred
-```
-
-These commands performs a complete training and inference pipeline for running the CellResDM model and doing consistency distillation for the CellResDM model. -->
 
 <!-- ## Overview
 
@@ -182,6 +152,8 @@ The script will download data for 10 plates: `BR00116991`, `BR00116992`, `BR0011
 │   ├───BR00116992
 ...
 ```
+
+After downloading the data, run the script [`record_unique_paths.sh`](record_unique_paths.sh) to generate a list of unique image paths. This step is necessary for the data loader to correctly locate and load the images.
 
 ### Channel Information
 
@@ -463,10 +435,10 @@ If you use CellResDM or this reproduction in your research, please cite:
 
 ```bibtex
 @misc{mao2024cellresdm,
-  title        = {Residual-Shifted Diffusion Models for Efficient Label-Free Cell Painting},
+  title        = {Transforming Drug Discovery with Generative AI and Foundation Models: Enhancing High-Throughput Screening},
   author       = {Yuchen Mao},
-  howpublished = {GitHub},
+  howpublished = {GitLab},
   year         = {2024},
-  url          = {https://github.com/yourusername/cellresdm}
+  url          = {https://gitlab.developers.cam.ac.uk/phy/data-intensive-science-mphil/assessments/projects/ym429}
 }
 ```
