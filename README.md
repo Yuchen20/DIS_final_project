@@ -4,7 +4,7 @@
 
 
 ## Description
-This project is associated with the submission of the coursework for the Research Project as part of the MPhil in Data Intensive Science at the University of Cambridge. The associated project writeup can be found under `report` folder. The dissertation report can be found at [`report/Dissertation.pdf`](report/Dissertation.pdf), and the executive summary can be found at [`report/exsummary.pdf`](report/exsummary.pdf).
+This project is associated with the submission of the coursework for the Research Project as part of the MPhil in Data Intensive Science at the University of Cambridge. The requirements for the coursework can be found at [`Instructions.md`](Instructions.md). The associated project writeup can be found under `report` folder. The dissertation report can be found at [`report/Dissertation.pdf`](report/Dissertation.pdf), and the executive summary can be found at [`report/exsummary.pdf`](report/exsummary.pdf).
 
 The primary objective of this project is to reproduce the results presented in https://arxiv.org/abs/2407.09507 and the results presented in https://arxiv.org/abs/2407.17882. However, this work extends the original work by (i) integrating consistency distillation to the CellResDM model, and (ii) doing additional ablation studies.
 
@@ -51,7 +51,6 @@ This repository provides a reproducible implementation of CellResDM and its cons
   - [Results](#results)
   - [License](#license)
   - [Acknowledgments](#acknowledgments)
-  - [Citation](#citation)
 
 </details>
 
@@ -124,6 +123,10 @@ This project utilizes the public cpg0000 dataset from the Cell Painting Gallery,
 # Install AWS CLI if not already installed
 pip install awscli
 
+
+# move the download_plates.sh to the your desired storage path
+mv scripts/download_plates.sh <your desired storage path>
+
 # Make the download script executable
 chmod +x download_plates.sh
 
@@ -153,7 +156,7 @@ The script will download data for 10 plates: `BR00116991`, `BR00116992`, `BR0011
 ...
 ```
 
-After downloading the data, run the script [`record_unique_paths.sh`](record_unique_paths.sh) to generate a list of unique image paths. This step is necessary for the data loader to correctly locate and load the images.
+After downloading the data, run the script [`record_unique_paths.sh`](scripts/record_unique_paths.sh) to generate a list of unique image paths. This step is necessary for the data loader to correctly locate and load the images.
 
 ### Channel Information
 
@@ -177,10 +180,10 @@ This project implements several models for label-free Cell Painting synthesis. F
 ---
 
 ### 1. CellResDM (Residual-Shifted Diffusion Model)
-- **Model Class & File:** `UNetModelSwin` in [`models/unet.py`]
-- **Noise Scheduling:** `DiffusionScheduler` and `CFG` in [`src/noise_scheduling.py`]
-- **Trainer:** `DiffusionTrainer` in [`src/train.py`]
-- **Predictor:** `SwinUNetPredictor` in [`src/inference.py`]
+- **Model Class & File:** `UNetModelSwin` in [`models/unet.py`](models/unet.py)
+- **Noise Scheduling:** `DiffusionScheduler` and `CFG` in [`src/noise_scheduling.py`](src/noise_scheduling.py)
+- **Trainer:** `DiffusionTrainer` in [`src/train.py`](src/train.py)
+- **Predictor:** `SwinUNetPredictor` in [`src/inference.py`](src/inference.py)
 - **How to Use:** `--use_diffusion` for training, `--model_type swin_unet` for inference
 - **Summary:**
   CellResDM is a fast, high-fidelity diffusion model for translating brightfield (BF) images to multiplexed immunofluorescence (IF) images. It leverages a Swin-UNet backbone, which combines the spatial localization of UNet with the global context modeling of Swin Transformers. The core innovation is the residual-shifted diffusion process: instead of starting from pure noise, the model gradually adds noise and a fraction of the residual (difference) between the BF and IF images, allowing the network to focus on learning only the minimal, biologically relevant transformations. The noise schedule is non-uniform and geometric, starting with almost no noise and ramping up steeply, which enables high-quality synthesis in as few as 15 steps (vs. 1000+ for standard diffusion). Training and inference are both efficient, and the model achieves strong fidelity to both pixel-level and single-cell morphological features.
@@ -188,10 +191,10 @@ This project implements several models for label-free Cell Painting synthesis. F
 ---
 
 ### 2. Consistency Distilled CellResDM
-- **Model Class & File:** `UNetModelSwin` in [`models/unet.py`]
-- **Noise Scheduling:** `DiffusionScheduler` and `CFG` in [`src/noise_scheduling.py`]
-- **Trainer:** `ConsistencyDistillationTrainer` in [`src/train.py`]
-- **Predictor:** `SwinUNetPredictor` in [`src/inference.py`]
+- **Model Class & File:** `UNetModelSwin` in [`models/unet.py`](models/unet.py)
+- **Noise Scheduling:** `DiffusionScheduler` and `CFG` in [`src/noise_scheduling.py`](src/noise_scheduling.py)
+- **Trainer:** `ConsistencyDistillationTrainer` in [`src/train.py`](src/train.py)
+- **Predictor:** `SwinUNetPredictor` in [`src/inference.py`](src/inference.py)
 - **How to Use:** `--use_consistency_distillation` for training, `--model_type swin_unet` for inference
 - **Summary:**
   Consistency Distilled CellResDM builds on a pretrained CellResDM by applying consistency distillation, a self-distillation technique that enforces the model to produce consistent outputs across adjacent timesteps. This is achieved by using an exponential moving average (EMA) of the model weights as a teacher and training the student to match the teacher's predictions at neighboring timesteps. The result is a model that can perform high-quality denoising in just 2 steps, dramatically accelerating inference. This approach not only speeds up generation but often improves output quality and generalization, as the model learns to be robust to noise and to produce stable, biologically meaningful outputs even under distribution shift. The same Swin-UNet backbone and geometric noise schedule are used, but the training loop is modified to enforce self-consistency.
@@ -199,9 +202,9 @@ This project implements several models for label-free Cell Painting synthesis. F
 ---
 
 ### 3. UNet Baseline
-- **Model Class & File:** `UNet` in [`models/plain_unet.py`]
-- **Trainer:** `NormalTrainer` in [`src/train.py`]
-- **Predictor:** `UNetPredictor` in [`src/inference.py`]
+- **Model Class & File:** `UNet` in [`models/plain_unet.py`](models/plain_unet.py)
+- **Trainer:** `NormalTrainer` in [`src/train.py`](src/train.py)
+- **Predictor:** `UNetPredictor` in [`src/inference.py`](src/inference.py)
 - **How to Use:** `--model_type unet` for inference
 - **Summary:**
   The UNet baseline is a classic encoder-decoder architecture with skip connections, widely used for biomedical image segmentation and translation tasks. In this project, it is used for direct image-to-image translation from BF to IF images, without any diffusion or noise scheduling. The model is simple, fast to train, and serves as a strong baseline for pixel-level metrics, but it lacks the generative diversity and robustness of diffusion-based approaches.
@@ -209,9 +212,9 @@ This project implements several models for label-free Cell Painting synthesis. F
 ---
 
 ### 4. Pix2Pix Baseline
-- **Model Class & File:** `ImprovedPix2PixModel` in [`models/pix2pix_improved.py`]
-- **Trainer:** `Pix2PixTrainer` in [`src/train.py`]
-- **Predictor:** `Pix2PixPredictor` in [`src/inference.py`]
+- **Model Class & File:** `ImprovedPix2PixModel` in [`models/pix2pix_improved.py`](models/pix2pix_improved.py)
+- **Trainer:** `Pix2PixTrainer` in [`src/train.py`](src/train.py)
+- **Predictor:** `Pix2PixPredictor` in [`src/inference.py`](src/inference.py)
 - **How to Use:** `--use_pix2pix` for training, `--model_type pix2pix` for inference
 - **Summary:**
   Pix2Pix is a conditional GAN framework for image-to-image translation. It uses a UNet-based generator and a PatchGAN discriminator, optimizing a combination of adversarial (GAN) loss and L1 loss. In this project, Pix2Pix is adapted for 5-channel BF-to-IF translation. The adversarial training encourages sharper, more realistic outputs, while the L1 loss ensures pixel-level accuracy. Pix2Pix can produce visually appealing results but may be less robust to out-of-distribution samples and can sometimes hallucinate features not present in the input.
@@ -219,9 +222,9 @@ This project implements several models for label-free Cell Painting synthesis. F
 ---
 
 ### 5. DeepHCS Baseline
-- **Model Class & File:** `DeepHCSModel` in [`models/deephcs.py`]
-- **Trainer:** `DeepHCSTrainer` in [`src/train.py`]
-- **Predictor:** `DeepHCSPredictor` in [`src/inference.py`]
+- **Model Class & File:** `DeepHCSModel` in [`models/deephcs.py`](models/deephcs.py)
+- **Trainer:** `DeepHCSTrainer` in [`src/train.py`](src/train.py)
+- **Predictor:** `DeepHCSPredictor` in [`src/inference.py`](src/inference.py)
 - **How to Use:** `--use_deephcs` for training, `--model_type deephcs` for inference
 - **Summary:**
   DeepHCS is a two-stage architecture specifically designed for high-content screening. The first stage, the Transform Network, performs a coarse translation from BF to IF. The second stage, the Refinement Network, takes both the transform output and the original input to produce a refined prediction. The refinement stage is trained with a combination of MAE and multi-scale SSIM loss, encouraging both pixel accuracy and perceptual similarity. DeepHCS can be trained in three modes: transform only, refinement only, or both jointly. It is particularly effective at capturing fine morphological details and is competitive with more complex generative models.
@@ -229,10 +232,10 @@ This project implements several models for label-free Cell Painting synthesis. F
 ---
 
 ### 6. Latent Diffusion (Optional/Advanced)
-- **Model Class & File:** `UNetModelSwin` in [`models/unet.py`] (for latent space)
-- **Noise Scheduling:** `DiffusionScheduler` and `CFG` in [`src/noise_scheduling.py`]
-- **Trainer:** `LatentDiffusionTrainer` in [`src/train.py`]
-- **Predictor:** `LatentDiffusionPredictor` in [`src/inference.py`]
+- **Model Class & File:** `UNetModelSwin` in [`models/unet.py`](models/unet.py) (for latent space)
+- **Noise Scheduling:** `DiffusionScheduler` and `CFG` in [`src/noise_scheduling.py`](src/noise_scheduling.py)
+- **Trainer:** `LatentDiffusionTrainer` in [`src/train.py`](src/train.py)
+- **Predictor:** `LatentDiffusionPredictor` in [`src/inference.py`](src/inference.py)
 - **How to Use:** `--use_latent_diffusion` for training, `--model_type latent_diffusion` for inference
 - **Summary:**
   Latent Diffusion adapts the CellResDM approach to a compressed latent space using a pretrained Stable Diffusion VAE. Images are first encoded to a lower-dimensional latent space, where the diffusion process is run, and then decoded back to image space. This can dramatically reduce memory and compute requirements, enabling larger models or higher resolutions. The same geometric noise schedule and Swin-UNet backbone are used, but all operations are performed in the latent domain. This approach is experimental but can be useful for scaling up or for applications where speed and memory are critical.
@@ -298,7 +301,7 @@ For Consistency Distilled CellResDM training, you can also use the following opt
 
 ### Cluster Submission Scripts
 For cluster environments, we provide a sample SLURM submission scripts:
-- [`submit_train.sh`](CSD3_Submission_Script/submit_train.sh): Basic CellResDM trainin
+- [`submit_train.sh`](scripts/submit_train.sh): Basic CellResDM training
 
 ## Inference
 
@@ -337,7 +340,7 @@ For more comprehensive evaluation including morphological feature correlations, 
 ### Cluster Submission Scripts
 
 For cluster environments, we provide a sample SLURM submission scripts:
-- [`submit_inference.sh`](CSD3_Submission_Script/submit_inference.sh): Basic CellResDM inference
+- [`submit_inference.sh`](scripts/submit_inference.sh): Basic CellResDM inference
 
 
 
@@ -366,18 +369,38 @@ The main pipeline file is located at [`Cell_Profiler/CPJUMP1_analysis_without_ba
 
 ### Data Preparation
 
-1. **Obtain inference results**: Use the `predictions` folder from your model's output directory
+Before running the CellProfiler pipeline, your folder structure should look like this:
 
-2. **Place data**: Copy the predictions folder to `Cell_Profiler/cell_profiler_original_files/`
+```
+Cell_Profiler/
+├── CPJUMP1_analysis_without_batchfile_406.cpproj   # Main CellProfiler pipeline
+├── cell_profiler_original_files/                   # Place your raw prediction folders here
+│   ├── cell_profiler_pre_process.py                # Preprocessing script
+|   └── get_real.py                                 # Script to move the target.npy files to the real folder and rename them to pred.npy
+│   ├── real/                                       # Ground truth images obtained by running the get_real.py script
+│   └── [model_name]/                               # Individual model predictions
+├── cell_profiler_input/                            # Auto-generated preprocessed data
+|   ├── ...
+│   └── [model_name]/                               # CellProfiler-ready format
+└── cell_profiler_results/                          # Pipeline outputs and analysis
+    ├── analysis.ipynb                              # Feature correlation analysis
+    ├── image_overlay_visualization.ipynb           # Segmentation visualization
+    └── [model_name]/                               # Individual model results
+```
 
-3. **Configure preprocessing**: Edit the `src_folder` variable in [`Cell_Profiler/cell_profiler_original_files/cell_profiler_pre_process.py`](Cell_Profiler/cell_profiler_original_files/cell_profiler_pre_process.py) to point to your predictions folder
+This can be achieved by following the below steps.
 
-4. **Run preprocessing**:
+**Steps:**
+
+1. **Copy predictions**: Place your model's `predictions` folder into `Cell_Profiler/cell_profiler_original_files/`
+
+2. **Run preprocessing**:
    ```bash
    python Cell_Profiler/cell_profiler_original_files/cell_profiler_pre_process.py
    ```
+   This converts images to CellProfiler-compatible TIFF format in `cell_profiler_input/`
 
-This script converts the data into CellProfiler-compatible format and saves it to `Cell_Profiler/cell_profiler_input/<predictions_folder_name>/`.
+3. **Ready for CellProfiler**: Your data is now prepared for the pipeline
 
 ### Pipeline Execution
 
@@ -414,9 +437,9 @@ Our experiments show that:
 4. **Out-of-Distribution Generalization**: Consistency Distilled CellResDM shows particularly strong generalization to out-of-distribution data, likely due to the regularizing effect of consistency distillation training.
 
 For detailed results and visualizations, see the notebooks in the `notebooks/` directory:
-- `channel_visualization.ipynb`: Visualizes the different channels and model outputs
-- `results_visualization.ipynb`: Visualizes the results of the different models
-- `umap_analysis.ipynb`: Analyzes the feature space using UMAP
+- [`channel_visualization.ipynb`](notebooks/channel_visualization.ipynb): Visualizes the different channels and model outputs
+- [`results_visualization.ipynb`](notebooks/results_visualization.ipynb): Visualizes the results of the different models
+- [`umap_analysis.ipynb`](notebooks/umap_analysis.ipynb): Analyzes the feature space using UMAP
 
 ## License
 
@@ -424,21 +447,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
+- Prof Guang Yang and Jiang Le for their guidance and support on the project
 - The Cell Painting Gallery for providing the cpg0000 dataset
 - The authors of the original CellResDM paper for their innovative approach
 - The Hugging Face team for their Transformers and Diffusers libraries
-- Prof Yang and Jiang Le for their guidance and support on the project
-
-## Citation
-
-If you use CellResDM or this reproduction in your research, please cite:
-
-```bibtex
-@misc{mao2024cellresdm,
-  title        = {Transforming Drug Discovery with Generative AI and Foundation Models: Enhancing High-Throughput Screening},
-  author       = {Yuchen Mao},
-  howpublished = {GitLab},
-  year         = {2024},
-  url          = {https://gitlab.developers.cam.ac.uk/phy/data-intensive-science-mphil/assessments/projects/ym429}
-}
-```
