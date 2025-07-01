@@ -8,6 +8,8 @@ This project is associated with the submission of the coursework for the Researc
 
 The primary objective of this project is to reproduce the results presented in https://arxiv.org/abs/2407.09507 and the results presented in https://arxiv.org/abs/2407.17882. However, this work extends the original work by (i) integrating consistency distillation to the CellResDM model, and (ii) doing additional ablation studies.
 
+Word Count: [Dissertation](report/Dissertation.pdf): 6,836 words, [Executive Summary](report/exsummary.pdf): 999 words.
+
 ### Projct Overview
 
 CellResDM is a next-generation deep learning framework for synthesizing multiplexed Cell Painting immunofluorescence (IF) images directly from brightfield (BF) microscopy. By leveraging a novel residual-shifted diffusion process and transformer-enhanced UNet architectures, CellResDM enables rapid, high-fidelity prediction of biologically meaningful fluorescence channels from label-free input, dramatically reducing the need for costly and time-consuming experimental staining.
@@ -38,6 +40,7 @@ This repository provides a reproducible implementation of CellResDM and its cons
     - [Training Options](#training-options)
     - [Cluster Submission Scripts](#cluster-submission-scripts)
   - [Inference](#inference)
+    - [Model Checkpoints](#model-checkpoints)
     - [Running Inference](#running-inference)
     - [Model Types](#model-types)
     - [Evaluation Metrics](#evaluation-metrics)
@@ -308,6 +311,10 @@ For cluster environments, we provide a sample SLURM submission scripts:
 The main inference script is `src/inference.py`, which supports different model types and evaluation metrics.
 
 The inference script generates synthetic images using the trained model. During inference, these images are automatically evaluated using pixel-level metrics, and the results are saved in a `metrics.csv` file. Copies of the generated synthetic images are also saved in the `predictions` subfolder within the specified output directory.
+
+### Model Checkpoints
+
+The model checkpoints are available at the following [google drive link](https://drive.google.com/drive/folders/1CvaSDDd7I2fuZUyvyTOo-xV9rvy2Zjdn?usp=sharing)
 
 ### Running Inference
 
